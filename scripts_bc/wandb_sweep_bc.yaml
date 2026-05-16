@@ -1,0 +1,43 @@
+program: train_iq.py
+name: hopper-bc-stable-baseline
+method: grid
+
+metric:
+  name: eval/episode_reward
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 8
+  eta: 2
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - env=hopper
+  - agent=sac
+  - method=bc
+  - method.loss=nll
+  - offline=True
+  - env.demo=Hopper-v2_d4rl.pkl
+  - expert.demos=1
+  - expert.subsample_freq=1
+  - train.batch=512
+  - agent.actor_lr=1e-4
+  - schedular=False
+  - method.early_stop=True
+  - method.early_stop_patience=30
+  - method.early_stop_min_delta=2.0
+  - eval.eps=20
+  - project_name=Offline-Dual-Q-DM
+  - exp_name=sweep_hopper_bc_stable_baseline
+  - ${args_no_hyphens}
+
+# Stable baseline sweep:
+# - Fix all BC hyperparameters
+# - Keep expert.demos=1
+# - Sweep only seed to estimate variance
+parameters:
+  seed:
+    values: [0, 1, 2, 3, 4]

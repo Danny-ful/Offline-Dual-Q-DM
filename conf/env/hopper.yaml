@@ -1,0 +1,44 @@
+# @package _global_
+
+left: -2
+right: 2
+penalty: 0.5
+agent.actor_lr: 3e-4
+agent.init_temp: 1
+env:
+  name: Hopper-v2
+  demo: Hopper-v2_d4rl.pkl
+  # learn_steps: 500000.0
+  # eval_interval: 5000.0
+
+  replay_mem: 1e6
+  initial_mem: 1280
+
+  eps_steps: 100000
+  eps_window: 10
+  learn_steps: 5e5
+  eval_interval: 5e3
+
+expert:
+  demos: 1
+  subsample_freq: 1
+
+eval:
+  policy: 
+  threshold: 3500
+
+
+agent:
+  name: sac
+  init_temp: 1e-2
+
+log_interval: 500  # Log every this many steps
+num_actor_updates: 1
+
+train:
+  use_target: true
+  soft_update: true
+  batch: 256
+
+q_net:
+  _target_: agent.sac_models.SingleQCritic

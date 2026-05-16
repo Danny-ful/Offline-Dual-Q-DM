@@ -1,0 +1,51 @@
+program: train_iq.py
+name: hopper-recoil-critic-only
+method: bayes
+
+metric:
+  name: eval/episode_reward
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 8
+  eta: 2
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - env=hopper
+  - agent=sac
+  - method=recoil
+  - method.recoil_critic_only=true
+  - offline=true
+  - seed=0
+  - env.demo=Hopper-v2_d4rl.pkl
+  - expert.demos=1
+  - expert.subsample_freq=1
+  - project_name=Offline-Dual-Q-DM
+  - exp_name=sweep_hopper_recoil_critic_only
+  - ${args_no_hyphens}
+
+parameters:
+  method.beta:
+    values: [0.1, 0.25, 0.5, 0.75, 0.9]
+
+  method.alpha:
+    values: [0.5, 1.0, 3.0, 5.0, 10.0, 30.0]
+
+  method.q_coef:
+    values: [0.1, 0.25, 0.5, 1.0]
+
+  method.actor_baseline_samples:
+    values: [1, 2, 4, 8]
+
+  agent.actor_lr:
+    values: [1e-5, 1e-4, 3e-4]
+
+  agent.critic_lr:
+    values: [1e-5, 1e-4, 3e-4]
+
+  train.batch:
+    values: [512]

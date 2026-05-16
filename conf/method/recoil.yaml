@@ -1,0 +1,20 @@
+# @package _global_
+
+method:
+  type: recoil
+  recoil_critic_only: False
+  beta: 0.5        # mixing coefficient in Eq. 11
+  tau: 1.0         # V implicit-max temperature (Eq. 12)
+  alpha: 3.0       # AWR temperature (Eq. 13)
+  q_coef: 0.25     # Bellman residual weight in Eq. 11
+  actor_baseline_samples: 4  # MC samples for E_{a'~pi}[Q_target(s,a')]
+  value_lr: 3e-4
+  value_hidden_dim: 256
+  value_hidden_depth: 2
+  awr_exp_clip: 100.0   # numerical safety on exp(alpha * advantage)
+
+  # kept for schema compatibility with DoubleQCritic constructor and
+  # other components that read these keys
+  tanh: False
+  regularize: False
+  div:

@@ -1,0 +1,28 @@
+# @package _global_
+
+method:
+  type: iq
+  loss: value # v0
+
+  constrain: False
+  grad_pen: False
+  chi: False
+  tanh: False
+  regularize: False
+  div:
+
+  cql: False
+  cql_alpha: 1.0
+  cql_temp: 1.0
+  cql_n_actions: 10
+
+  alpha: 0.5
+  lambda_gp: 10
+  mix_coeff: 1
+
+  # Dynamics-uncertainty penalty U(s,a) = γ·Std_i(E_M[min_k Q_ψ_k^-(s',a')])
+  penalty: False
+  penalty_coef: 1.0
+  penalty_N: 5        # ensemble size (must match train_dynamics.py)
+  penalty_M: 10       # samples per ensemble member
+  dynamics_ckpt: ''   # e.g. dynamics/hopper/ensemble_5.pt

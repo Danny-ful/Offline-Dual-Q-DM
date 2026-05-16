@@ -1,0 +1,63 @@
+program: train_iq.py
+name: hopper-recoil
+method: bayes
+
+metric:
+  name: eval/episode_reward
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 8
+  eta: 2
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - env=hopper
+  - agent=sac
+  - method=recoil
+  - method.recoil_critic_only=false
+  - offline=true
+  - seed=0
+  - env.demo=Hopper-v2_d4rl.pkl
+  - expert.demos=1
+  - expert.subsample_freq=1
+  - project_name=Offline-Dual-Q-DM
+  - exp_name=sweep_hopper_recoil
+  - ${args_no_hyphens}
+
+# ReCOIL core scalars (from the paper, Eqs. 11-13):
+#   method.beta     - mixing weight between sampled-policy and expert Q terms (Eq. 11)
+#   method.tau      - temperature of the implicit-max V loss (Eq. 12)
+#   method.alpha    - temperature of the AWR policy loss (Eq. 13)
+#   method.q_coef   - Bellman residual weight in Eq. 11 (paper default 0.25)
+#   method.value_lr - learning rate of the separate V_theta head
+# We also sweep the actor/critic learning rates and batch size to catch
+# optimization regimes that interact with the above temperatures.
+parameters:
+
+  method.beta:
+    values: [0.1, 0.25, 0.5, 0.75, 0.9]
+
+  method.tau:
+    values: [0.5, 1.0, 2.0, 5.0]
+
+  method.alpha:
+    values: [0.5, 1.0, 3.0, 5.0, 10.0, 30.0]
+
+  method.q_coef:
+    values: [0.1, 0.25, 0.5, 1.0]
+
+  method.value_lr:
+    values: [1e-5, 5e-5, 1e-4, 3e-4]
+
+  agent.actor_lr:
+    values: [1e-5, 1e-4, 3e-4]
+
+  agent.critic_lr:
+    values: [1e-5, 1e-4, 3e-4]
+
+  train.batch:
+    values: [512]

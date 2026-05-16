@@ -1,0 +1,16 @@
+# @package _global_
+
+method:
+  type: bc
+  loss: nll  # one of: nll, mse
+  early_stop: true
+  early_stop_patience: 20
+  early_stop_min_delta: 0.0
+
+  # The fields below are unused by BC itself but are read elsewhere
+  # (e.g. DoubleQCritic reads method.tanh during construction). They are kept
+  # here so that Hydra's schema stays consistent with iq/sqil.
+  tanh: False
+  regularize: False
+  alpha: 0.5
+  div:

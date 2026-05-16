@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+
+# RL outputs
+outputs/
+logs/
+wandb/
+
+# checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# datasets
+*.pkl
+
+# macOS
+.DS_Store
+# cursor
+.cursor/
+
+# sweep logs
+*.log
