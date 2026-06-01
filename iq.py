@@ -22,8 +22,11 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
     v0 = current_v.mean()
     v0_expert = current_v[expert_mask].mean()
     v0_non_expert = current_v[non_expert_mask].mean()
-    loss_dict['v0_expert'] = v0.item()
+    loss_dict['v0_expert'] = v0_expert.item()
     loss_dict['v0_non_expert'] = v0_non_expert.item()
+    # loss_dict['v0_non_expert_std'] = current_v[non_expert_mask].std(unbiased=False).item()
+    # loss_dict['Q_expert'] = current_Q[expert_mask].item()
+    # loss_dict['Q_non_expert'] = current_Q[non_expert_mask].item()
     # loss_dict['v0_gap_expert_minus_non_expert'] = (v0 - v0_non_expert).item()
 
     #  calculate 1st term for IQ loss
@@ -81,6 +84,13 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         loss += args.value_ratio*value_loss
         loss_dict['value_loss'] = value_loss.item()
 
+    elif args.method.loss == "value_supplement":
+        # sample using expert and policy states (works online)
+        # E_(ρ)[V(s) - γV(s')]
+        value_loss = (current_v - y)[~is_expert].mean()
+        loss += args.value_ratio*value_loss
+        loss_dict['value_loss'] = value_loss.item()
+
     elif args.method.loss == "v0":
         # alternate sampling using only initial states (works offline but usually suboptimal than `value_expert` startegy)
         # (1-γ)E_(ρ0)[V(s0)]
@@ -134,6 +144,7 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         y = (1 - done) * gamma * next_v
         
         reward = current_Q - y
+        # reward = (current_Q - y)[~is_expert]
         chi2_loss = 1/(4 * args.method.alpha) * (reward**2).mean()
         loss += chi2_loss
         loss_dict['regularize_loss'] = chi2_loss.item()
@@ -147,7 +158,7 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
     #     loss_dict['bellman_restirct'] = bellman_restrict.item()
 
     if args.method.constrain:
-        # for Q constrain
+        # for Bellman constrain
         y = (1 - done) * gamma * next_v
 
         reward = - (current_Q - y)
@@ -171,34 +182,73 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
             constrain_loss = (torch.relu(reward - math.log(2.0)))**2
         else:
             constrain_loss = (torch.relu(reward - args.right))**2 + (torch.relu(args.left - reward))**2
+            # constrain_loss = torch.relu(reward - args.right) + torch.relu(args.left - reward)
         
         loss += (args.penalty * constrain_loss).mean()
+        # loss += (args.penalty * constrain_loss)[expert_mask].mean()
+        
         loss_dict['constrain_loss'] = (args.penalty * constrain_loss).mean().item()
         loss_dict['constrain_loss_expert'] = (args.penalty * constrain_loss)[expert_mask].mean().item()
         loss_dict['constrain_loss_non_expert'] = (args.penalty * constrain_loss)[~expert_mask].mean().item()
+        loss_dict['constrain_loss_non_expert_positive'] = (torch.relu(args.left - reward))[~expert_mask].mean().item()
+
+        non_expert_constrain_loss = (args.penalty * constrain_loss)[~expert_mask].mean()
+        critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
+        non_expert_grads = torch.autograd.grad(
+            non_expert_constrain_loss,
+            critic_params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+            )
+        grad_norms_sup = [g.detach().norm() for g in non_expert_grads if g is not None]
+        if grad_norms_sup:
+            grad_norms_sup = torch.stack(grad_norms_sup)
+            loss_dict['constrain_grad_non_expert_mean'] = grad_norms_sup.mean().item()
+            loss_dict['constrain_grad_non_expert_var'] = grad_norms_sup.var(unbiased=False).item()
+            loss_dict['constrain_grad_non_expert_max'] = grad_norms_sup.max().item()
+            loss_dict['constrain_grad_non_expert_total_norm'] = torch.linalg.vector_norm(grad_norms_sup).item()
+
+        expert_constrain_loss = (args.penalty * constrain_loss)[expert_mask].mean()
+        critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
+        expert_grads = torch.autograd.grad(
+            expert_constrain_loss,
+            critic_params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+            )
+        grad_norms = [g.detach().norm() for g in expert_grads if g is not None]
+        if grad_norms:
+            grad_norms = torch.stack(grad_norms)
+            loss_dict['constrain_grad_expert_mean'] = grad_norms.mean().item()
+            loss_dict['constrain_grad_expert_var'] = grad_norms.var(unbiased=False).item()
+            # loss_dict['constrain_grad_expert_max'] = grad_norms.max().item()
+            # loss_dict['constrain_grad_expert_total_norm'] = torch.linalg.vector_norm(grad_norms).item()
 
 
-    # CQL penalty for continuous actions (sac)
-    if args.method.cql and hasattr(agent, "cqlV"):
+
+    # # CQL penalty for continuous actions (sac)
+    # if args.method.cql and hasattr(agent, "cqlV"):
         
-        expert_mask = is_expert.squeeze(-1).bool()  # [B]
-        cql_temp = getattr(args.method, "cql_temp", 1.0)
+    #     expert_mask = is_expert.squeeze(-1).bool()  # [B]
+    #     cql_temp = getattr(args.method, "cql_temp", 1.0)
 
-        # term1: E_{s~D}[ tau * logsumexp(Q(s,·)/tau) ], use all batch states
-        # iq.py (continuous only)
-        term1 = agent.cqlV(
-            obs, agent.critic_net,
-            num_random=args.method.cql_n_actions,
-            temp=cql_temp
-        )
+    #     # term1: E_{s~D}[ tau * logsumexp(Q(s,·)/tau) ], use all batch states
+    #     # iq.py (continuous only)
+    #     term1 = agent.cqlV(
+    #         obs, agent.critic_net,
+    #         num_random=args.method.cql_n_actions,
+    #         temp=cql_temp
+    #     )
 
-        # term2: E_{(s,a)~expert}[Q(s,a)], use expert actions only
-        term2 = current_Q[expert_mask].mean() if expert_mask.any() else current_Q.new_tensor(0.0)
+    #     # term2: E_{(s,a)~expert}[Q(s,a)], use expert actions only
+    #     term2 = current_Q[expert_mask].mean() if expert_mask.any() else current_Q.new_tensor(0.0)
 
-        cql_loss = args.method.cql_alpha * (term1 - term2)
+    #     cql_loss = args.method.cql_alpha * (term1 - term2)
 
-        loss += cql_loss
-        loss_dict["cql_loss"] = cql_loss.item()
+    #     loss += cql_loss
+    #     loss_dict["cql_loss"] = cql_loss.item()
         
 
 

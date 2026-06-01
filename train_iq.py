@@ -138,6 +138,11 @@ def main(cfg: DictConfig):
                                   num_trajs=np.iinfo(np.int32).max,
                                   sample_freq=args.expert.subsample_freq,
                                   seed=args.seed + 43)
+        # supplement_num_trajs = args.expert.demos*10
+        # online_memory_replay.load(supplement_path,
+        #                           num_trajs=supplement_num_trajs,
+        #                           sample_freq=args.expert.subsample_freq,
+        #                           seed=args.seed + 43)
         print(f'--> Supplement memory size: {online_memory_replay.size()}')
 
     # Setup logging
@@ -199,27 +204,27 @@ def main(cfg: DictConfig):
                         wandb.run.summary["best_returns"] = best_eval_returns
                         save(agent, epoch, args, output_dir='results_best')
 
-                    if bc_early_stop:
-                        if improved_for_early_stop:
-                            bc_no_improve_evals = 0
-                        else:
-                            bc_no_improve_evals += 1
+                    # if bc_early_stop:
+                    #     if improved_for_early_stop:
+                    #         bc_no_improve_evals = 0
+                    #     else:
+                    #         bc_no_improve_evals += 1
 
-                    if bc_early_stop:
-                        logger.log('eval/bc_no_improve_evals', bc_no_improve_evals, learn_steps)
-                    logger.dump(learn_steps, ty='eval')
+                    # if bc_early_stop:
+                    #     logger.log('eval/bc_no_improve_evals', bc_no_improve_evals, learn_steps)
+                    # logger.dump(learn_steps, ty='eval')
 
-                    if bc_early_stop and bc_no_improve_evals >= bc_early_stop_patience:
-                        print(
-                            "Early stopping BC after "
-                            f"{bc_no_improve_evals} evals without improvement "
-                            f"(best={best_eval_returns:.2f}, current={returns:.2f}, "
-                            f"min_delta={bc_early_stop_min_delta:.2f})."
-                        )
-                        wandb.run.summary["early_stop_step"] = learn_steps
-                        wandb.run.summary["early_stop_best_returns"] = best_eval_returns
-                        wandb.finish()
-                        return
+                    # if bc_early_stop and bc_no_improve_evals >= bc_early_stop_patience:
+                    #     print(
+                    #         "Early stopping BC after "
+                    #         f"{bc_no_improve_evals} evals without improvement "
+                    #         f"(best={best_eval_returns:.2f}, current={returns:.2f}, "
+                    #         f"min_delta={bc_early_stop_min_delta:.2f})."
+                    #     )
+                    #     wandb.run.summary["early_stop_step"] = learn_steps
+                    #     wandb.run.summary["early_stop_best_returns"] = best_eval_returns
+                    #     wandb.finish()
+                    #     return
 
                 learn_steps += 1
                 if learn_steps == LEARN_STEPS:
@@ -450,6 +455,9 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
     # Optimize the critic
     self.critic_optimizer.zero_grad()
     critic_loss.backward()
+
+    # torch.nn.utils.clip_grad_norm_(self.critic_net.parameters(), max_norm=10.0)
+
     # step critic
     self.critic_optimizer.step()
     return loss_dict

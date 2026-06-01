@@ -45,8 +45,6 @@ env:
   # use pixels
   from_pixels: False
 
-method:
-  type: iq
 
 # Extra args
 log_interval: 100  # Log every this many steps

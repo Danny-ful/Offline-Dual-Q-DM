@@ -16,7 +16,7 @@ import hydra
 import numpy as np
 import torch
 import torch.nn.functional as F
-# import wandb
+import wandb
 from omegaconf import DictConfig, OmegaConf
 from tensorboardX import SummaryWriter
 
@@ -93,12 +93,10 @@ class OfflineMemory(object):
         return batch_state, batch_next_state, batch_action, batch_reward, batch_done
 
 
-@hydra.main(config_path="conf", config_name="config")
+@hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig):
     
     args = get_args(cfg)
-    # wandb.init(project=args.project_name, entity='iq-learn',
-    #            sync_tensorboard=True, reinit=True, config=args)
 
     # set seeds
     random.seed(args.seed)
@@ -113,6 +111,21 @@ def main(cfg: DictConfig):
     env_args = args.env
     env = make_env(args)
     eval_env = make_env(args)
+
+    # Fill dimensions before resolving OmegaConf interpolations used by q_net/actor configs.
+    args.agent.obs_dim = env.observation_space.shape[0]
+    if hasattr(env.action_space, "n"):
+        args.agent.action_dim = env.action_space.n
+    else:
+        args.agent.action_dim = env.action_space.shape[0]
+
+    wandb.init(
+        project=args.project_name,
+        name=args.exp_name or None,
+        config=OmegaConf.to_container(args, resolve=True),
+        reinit=True,
+        sync_tensorboard=True,
+    )
 
     # Seed envs
     env.seed(args.seed)
@@ -139,9 +152,19 @@ def main(cfg: DictConfig):
                               seed=args.seed + 42)
     print(f'--> Expert memory size: {expert_memory_replay.size()}')
 
+    # online_memory_replay = OfflineMemory(env.observation_space.shape[0], env.action_space.shape[0])
+    # filename = "/home/ubuntu/laiwenqi/projects/Offline\ Dual\ Q-DM/supplement/{}_iql_collected.npz".format(args.env.name)
+    # online_memory_replay.load(filename)
     online_memory_replay = OfflineMemory(env.observation_space.shape[0], env.action_space.shape[0])
-    filename = "/home/ubuntu/laiwenqi/projects/Offline\ Dual\ Q-DM/supplement/{}_iql_collected.npz".format(args.env.name)
-    online_memory_replay.load(filename)
+    supplement_path = hydra.utils.to_absolute_path(f"supplement/{args.env.demo}")
+    online_memory_replay.load_from_pkl(
+        supplement_path,
+        num_trajs=args.expert.demos,
+        sample_freq=args.expert.subsample_freq,
+        seed=args.seed + 123,
+    )
+    print(f"--> Supplement memory size: {online_memory_replay.size()}")
+
     # Setup logging
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join(args.log_dir, "offline")

@@ -28,9 +28,15 @@ ENV_SPECS: Dict[str, Dict[str, str]] = {
         "d4rl_prefix": "halfcheetah",
         "demo_filename": "HalfCheetah-v2_d4rl.pkl",
     },
+    "ant": {
+        "config_name": "ant",
+        "gym_env": "Ant-v2",
+        "d4rl_prefix": "ant",
+        "demo_filename": "Ant-v2_d4rl.pkl",
+    },
 }
 
-QUALITY_CHOICES = ("expert", "medium", "medium-replay", "replay")
+QUALITY_CHOICES = ("expert", "medium", "medium-replay", "replay", "medium-expert")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,13 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--supplement-source",
         choices=QUALITY_CHOICES,
-        default="medium",
+        default="medium-expert",
         help="D4RL quality used for supplement/.",
     )
     parser.add_argument(
         "--expert-episodes",
         type=int,
-        default=25,
+        default=-1,
         help="Maximum number of expert trajectories to save. Use -1 for all.",
     )
     parser.add_argument(
@@ -80,6 +86,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not export supplement/.",
     )
+    parser.add_argument(
+        "--timeout-as-done",
+        action="store_true",
+        help=(
+            "Store time-limit cutoffs as done=1 in the exported trajectories. "
+            "By default, only true D4RL terminals are stored as done=1."
+        ),
+    )
     return parser
 
 
@@ -95,7 +109,10 @@ def import_d4rl_modules():
     return gym
 
 
-def split_dataset_into_trajectories(dataset: Dict[str, np.ndarray]) -> Dict[str, list]:
+def split_dataset_into_trajectories(
+    dataset: Dict[str, np.ndarray],
+    timeout_as_done: bool = False,
+) -> Dict[str, list]:
     observations = dataset["observations"]
     actions = dataset["actions"]
     rewards = dataset["rewards"]
@@ -120,13 +137,16 @@ def split_dataset_into_trajectories(dataset: Dict[str, np.ndarray]) -> Dict[str,
     }
 
     for idx in range(len(observations)):
+        done = bool(terminals[idx] or (timeout_as_done and timeouts[idx]))
+        end_of_trajectory = bool(terminals[idx] or timeouts[idx])
+
         current["states"].append(observations[idx])
         current["next_states"].append(next_observations[idx])
         current["actions"].append(actions[idx])
         current["rewards"].append(rewards[idx])
-        current["dones"].append(float(terminals[idx]))
+        current["dones"].append(float(done))
 
-        if terminals[idx] or timeouts[idx]:
+        if end_of_trajectory:
             trajs["states"].append(np.asarray(current["states"], dtype=np.float32))
             trajs["next_states"].append(np.asarray(current["next_states"], dtype=np.float32))
             trajs["actions"].append(np.asarray(current["actions"], dtype=np.float32))
@@ -172,10 +192,11 @@ def export_one_dataset(
     d4rl_name: str,
     output_path: Path,
     max_episodes: int,
+    timeout_as_done: bool,
 ) -> None:
     env = gym.make(d4rl_name)
     dataset = env.get_dataset()
-    trajs = split_dataset_into_trajectories(dataset)
+    trajs = split_dataset_into_trajectories(dataset, timeout_as_done=timeout_as_done)
     trajs = trim_episodes(trajs, max_episodes)
     save_pickle(trajs, output_path)
 
@@ -249,6 +270,7 @@ def main() -> None:
                 d4rl_name=make_d4rl_name(d4rl_prefix, args.expert_source),
                 output_path=experts_dir / demo_filename,
                 max_episodes=args.expert_episodes,
+                timeout_as_done=args.timeout_as_done,
             )
 
         if not args.skip_supplement:
@@ -257,13 +279,14 @@ def main() -> None:
                 d4rl_name=make_d4rl_name(d4rl_prefix, args.supplement_source),
                 output_path=supplement_dir / demo_filename,
                 max_episodes=args.supplement_episodes,
+                timeout_as_done=args.timeout_as_done,
             )
 
         print_train_commands(
             env_key,
             repo_root,
             demo_filename,
-            expert_episodes=min(args.expert_episodes, 10) if args.expert_episodes > 0 else 10,
+            expert_episodes=min(args.expert_episodes, 1000) if args.expert_episodes > 0 else 10,
             supplement_episodes=args.supplement_episodes,
         )
 
