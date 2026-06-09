@@ -161,10 +161,10 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         # for Bellman constrain
         y = (1 - done) * gamma * next_v
 
-        reward = - (current_Q - y)
+        reward = current_Q - y
 
         if penalty_u is not None:
-            reward = reward - penalty_u
+            reward = reward + penalty_u
 
         if args.method.div == "hellinger":
             constrain_loss = (torch.relu(reward - 1))**2
@@ -182,47 +182,81 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
             constrain_loss = (torch.relu(reward - math.log(2.0)))**2
         else:
             constrain_loss = (torch.relu(reward - args.right))**2 + (torch.relu(args.left - reward))**2
+
             # constrain_loss = torch.relu(reward - args.right) + torch.relu(args.left - reward)
-        
-        loss += (args.penalty * constrain_loss).mean()
-        # loss += (args.penalty * constrain_loss)[expert_mask].mean()
-        
-        loss_dict['constrain_loss'] = (args.penalty * constrain_loss).mean().item()
-        loss_dict['constrain_loss_expert'] = (args.penalty * constrain_loss)[expert_mask].mean().item()
-        loss_dict['constrain_loss_non_expert'] = (args.penalty * constrain_loss)[~expert_mask].mean().item()
-        loss_dict['constrain_loss_non_expert_positive'] = (torch.relu(args.left - reward))[~expert_mask].mean().item()
 
-        non_expert_constrain_loss = (args.penalty * constrain_loss)[~expert_mask].mean()
-        critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
-        non_expert_grads = torch.autograd.grad(
-            non_expert_constrain_loss,
-            critic_params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-            )
-        grad_norms_sup = [g.detach().norm() for g in non_expert_grads if g is not None]
-        if grad_norms_sup:
-            grad_norms_sup = torch.stack(grad_norms_sup)
-            loss_dict['constrain_grad_non_expert_mean'] = grad_norms_sup.mean().item()
-            loss_dict['constrain_grad_non_expert_var'] = grad_norms_sup.var(unbiased=False).item()
-            loss_dict['constrain_grad_non_expert_max'] = grad_norms_sup.max().item()
-            loss_dict['constrain_grad_non_expert_total_norm'] = torch.linalg.vector_norm(grad_norms_sup).item()
+            # diff_high = torch.relu(reward - args.right)
+            # diff_low = torch.relu(args.left - reward)
+            # constrain_loss =F.smooth_l1_loss(diff_high, torch.zeros_like(diff_high), reduction='none')+F.smooth_l1_loss(diff_low, torch.zeros_like(diff_high), reduction='none')
+           
+        constraint_mean = constrain_loss.mean()
 
-        expert_constrain_loss = (args.penalty * constrain_loss)[expert_mask].mean()
-        critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
-        expert_grads = torch.autograd.grad(
-            expert_constrain_loss,
-            critic_params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-            )
-        grad_norms = [g.detach().norm() for g in expert_grads if g is not None]
-        if grad_norms:
-            grad_norms = torch.stack(grad_norms)
-            loss_dict['constrain_grad_expert_mean'] = grad_norms.mean().item()
-            loss_dict['constrain_grad_expert_var'] = grad_norms.var(unbiased=False).item()
+        penalty_auto = bool(getattr(args.method, "penalty_auto", False))
+        target_constraint = float(getattr(args.method, "penalty_target", 0.0))
+        penalty_lr = float(getattr(args.method, "penalty_lr", 0.01))
+        penalty_min = float(getattr(args.method, "penalty_min", 0.0))
+        penalty_max = float(getattr(args.method, "penalty_max", 1e6))
+
+        if penalty_auto:
+            if not hasattr(agent, "log_penalty"):
+                init_penalty = float(args.penalty)
+                log_penalty = torch.tensor(math.log(max(init_penalty, 1e-8)), device=constraint_mean.device)
+                log_penalty.requires_grad_(True)
+                agent.log_penalty = log_penalty
+                agent.penalty_optimizer = torch.optim.Adam([agent.log_penalty], lr=penalty_lr)
+
+            penalty_loss = -(agent.log_penalty * (constraint_mean - target_constraint).detach())
+            agent.penalty_optimizer.zero_grad()
+            penalty_loss.backward()
+            agent.penalty_optimizer.step()
+
+            with torch.no_grad():
+                penalty = agent.log_penalty.exp().clamp(penalty_min, penalty_max)
+                agent.log_penalty.copy_(torch.log(penalty.clamp_min(1e-8)))
+                args.penalty = float(penalty.item())
+        else:
+            penalty = torch.tensor(float(args.penalty), device=constraint_mean.device)
+
+        loss += (penalty * constrain_loss).mean()
+        # loss += (penalty * constrain_loss)[expert_mask].mean()
+
+        loss_dict['constrain_loss'] = (penalty * constrain_loss).mean().item()
+        loss_dict['constrain_loss_expert'] = (penalty * constrain_loss)[expert_mask].mean().item()
+        loss_dict['constrain_loss_non_expert'] = (penalty * constrain_loss)[~expert_mask].mean().item()
+        loss_dict['constrain_loss_non_expert_positive'] = (torch.relu(reward - args.right))[~expert_mask].mean().item()
+        loss_dict['penalty_alpha'] = float(penalty.item())
+
+        # non_expert_constrain_loss = (penalty * constrain_loss)[~expert_mask].mean()
+        # critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
+        # non_expert_grads = torch.autograd.grad(
+        #     non_expert_constrain_loss,
+        #     critic_params,
+        #     retain_graph=True,
+        #     create_graph=False,
+        #     allow_unused=True,
+        #     )
+        # grad_norms_sup = [g.detach().norm() for g in non_expert_grads if g is not None]
+        # if grad_norms_sup:
+        #     grad_norms_sup = torch.stack(grad_norms_sup)
+        #     loss_dict['constrain_grad_non_expert_mean'] = grad_norms_sup.mean().item()
+        #     loss_dict['constrain_grad_non_expert_var'] = grad_norms_sup.var(unbiased=False).item()
+        #     loss_dict['constrain_grad_non_expert_max'] = grad_norms_sup.max().item()
+        #     loss_dict['constrain_grad_non_expert_total_norm'] = torch.linalg.vector_norm(grad_norms_sup).item()
+
+        # expert_constrain_loss = (penalty * constrain_loss)[expert_mask].mean()
+        # critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
+        # expert_grads = torch.autograd.grad(
+        #     expert_constrain_loss,
+        #     critic_params,
+        #     retain_graph=True,
+        #     create_graph=False,
+        #     allow_unused=True,
+        #     )
+        # grad_norms = [g.detach().norm() for g in expert_grads if g is not None]
+        # if grad_norms:
+        #     grad_norms = torch.stack(grad_norms)
+        #     loss_dict['constrain_grad_expert_mean'] = grad_norms.mean().item()
+        #     loss_dict['constrain_grad_expert_var'] = grad_norms.var(unbiased=False).item()
             # loss_dict['constrain_grad_expert_max'] = grad_norms.max().item()
             # loss_dict['constrain_grad_expert_total_norm'] = torch.linalg.vector_norm(grad_norms).item()
 

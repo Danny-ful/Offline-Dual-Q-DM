@@ -22,6 +22,11 @@ method:
 
   # Dynamics-uncertainty penalty U(s,a) = γ·Std_i(E_M[min_k Q_ψ_k^-(s',a')])
   penalty: False
+  penalty_auto: False
+  penalty_target: 0.0
+  penalty_lr: 0.01
+  penalty_min: 0.0
+  penalty_max: 1e6
   penalty_coef: 1.0
   penalty_N: 5        # ensemble size (must match train_dynamics.py)
   penalty_M: 10       # samples per ensemble member

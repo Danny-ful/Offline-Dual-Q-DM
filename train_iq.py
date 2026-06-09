@@ -44,9 +44,12 @@ def get_args(cfg: DictConfig):
 def main(cfg: DictConfig):
     args = get_args(cfg)
     wandb.init(project=args.project_name,
-               sync_tensorboard=True,
+               sync_tensorboard=False,
                reinit=True,
                config=OmegaConf.to_container(args, resolve=False))
+    wandb.define_metric("learn_steps")
+    wandb.define_metric("train/*", step_metric="learn_steps")
+    wandb.define_metric("eval/*", step_metric="learn_steps")
 
     # set seeds
     random.seed(args.seed)
@@ -251,6 +254,7 @@ def main(cfg: DictConfig):
                 if learn_steps % args.log_interval == 0:
                     for key, loss in losses.items():
                         writer.add_scalar(key, loss, global_step=learn_steps)
+                        wandb.log({key: loss, "learn_steps": learn_steps}, step=learn_steps)
                 continue
 
             if steps < args.num_seed_steps:
@@ -310,6 +314,7 @@ def main(cfg: DictConfig):
                 if learn_steps % args.log_interval == 0:
                     for key, loss in losses.items():
                         writer.add_scalar(key, loss, global_step=learn_steps)
+                        wandb.log({key: loss, "learn_steps": learn_steps}, step=learn_steps)
 
             if done:
                 break
@@ -433,19 +438,19 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
             expert_actor_action_mse = F.mse_loss(expert_actor_action, expert_action)
             sup_dataset_mse = F.mse_loss(policy_actor_action, policy_action)
 
-        loss_dict["diagnostics/q_expert_state_expert_action"] = q_expert_action.item()
-        loss_dict["diagnostics/q_expert_state_actor_mean_action"] = q_actor_action.item()
+        # loss_dict["diagnostics/q_expert_state_expert_action"] = q_expert_action.item()
+        # loss_dict["diagnostics/q_expert_state_actor_mean_action"] = q_actor_action.item()
         loss_dict["diagnostics/q_expert_state_expert_minus_actor"] = q_gap.item()
-        loss_dict["diagnostics/q_supplement_state_dataset_action"] = q_policy_dataset_action.item()
-        loss_dict["diagnostics/q_supplement_state_actor_mean_action"] = q_policy_actor_action.item()
+        # loss_dict["diagnostics/q_supplement_state_dataset_action"] = q_policy_dataset_action.item()
+        # loss_dict["diagnostics/q_supplement_state_actor_mean_action"] = q_policy_actor_action.item()
         loss_dict["diagnostics/q_supplement_state_dataset_minus_actor"] = q_policy_gap.item()
         loss_dict["diagnostics/actor_action_mse_to_expert_on_expert_obs"] = expert_actor_action_mse.item()
         loss_dict["diagnostics/actor_action_mse_to_dataset_on_supplement_obs"] = sup_dataset_mse.item()
-        logger.log("train/q_expert_state_expert_action", q_expert_action, step)
-        logger.log("train/q_expert_state_actor_mean_action", q_actor_action, step)
+        # logger.log("train/q_expert_state_expert_action", q_expert_action, step)
+        # logger.log("train/q_expert_state_actor_mean_action", q_actor_action, step)
         logger.log("train/q_expert_state_expert_minus_actor", q_gap, step)
-        logger.log("train/q_supplement_state_dataset_action", q_policy_dataset_action, step)
-        logger.log("train/q_supplement_state_actor_mean_action", q_policy_actor_action, step)
+        # logger.log("train/q_supplement_state_dataset_action", q_policy_dataset_action, step)
+        # logger.log("train/q_supplement_state_actor_mean_action", q_policy_actor_action, step)
         logger.log("train/q_supplement_state_dataset_minus_actor", q_policy_gap, step)
         logger.log("train/actor_action_mse_to_expert_on_expert_obs", expert_actor_action_mse, step)
         logger.log("train/actor_action_mse_to_dataset_on_supplement_obs", sup_dataset_mse, step)
@@ -464,7 +469,7 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
 
 
 def iq_update(self, policy_buffer, expert_buffer, logger, step):
-    policy_batch = policy_buffer.get_samples(self.batch_size, self.device)
+    policy_batch = policy_buffer.get_samples(4*self.batch_size, self.device)
     expert_batch = expert_buffer.get_samples(self.batch_size, self.device)
 
     losses = self.iq_update_critic(policy_batch, expert_batch, logger, step)

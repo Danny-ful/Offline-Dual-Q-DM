@@ -6,6 +6,7 @@ import shutil
 import torch
 import torchvision
 import numpy as np
+import wandb
 from torch.utils.tensorboard import SummaryWriter
 from termcolor import colored
 
@@ -157,6 +158,8 @@ class Logger(object):
     def _try_sw_log(self, key, value, step):
         if self._sw is not None:
             self._sw.add_scalar(key, value, step)
+        if wandb.run is not None:
+            wandb.log({key: value, "learn_steps": step}, step=step)
 
     def _try_sw_log_video(self, key, frames, step):
         if self._sw is not None:
