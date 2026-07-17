@@ -41,20 +41,11 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- Stable offline IQ baseline using train_iq_offline.py ---
+# --- 4) Train SAC experts for all MuJoCo envs ---
+SEED="${SEED:-0}"
 
-"$PYTHON_BIN" -m wandb sync --sync-tensorboard logs/offline >/dev/null 2>&1 &
-WANDB_SYNC_PID="$!"
-cleanup() {
-  if kill -0 "$WANDB_SYNC_PID" >/dev/null 2>&1; then
-    kill "$WANDB_SYNC_PID" >/dev/null 2>&1 || true
-  fi
-}
-trap cleanup EXIT
-
-
-echo "=== Stage 1: Training Dynamics Model ==="
-
-"$PYTHON_BIN" train_dynamics.py \
-    env=ant \
-    env.demo=ant_full_replay-v2.pkl
+"$PYTHON_BIN" train_expert_sac.py \
+  agent=sac \
+  agent.learn_temp=True \
+  q_net._target_=agent.sac_models.DoubleQCritic \
+  seed="${SEED}"

@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 
 # Full IQ-Learn objective with other divergences and options
-def iq_loss(agent, current_Q, current_v, next_v, batch):
+def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False):
     args = agent.args
     gamma = agent.gamma
     obs, next_obs, action, env_reward, done, is_expert = batch
@@ -20,10 +20,11 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
     expert_mask = is_expert.squeeze(1)
     non_expert_mask = ~expert_mask
     v0 = current_v.mean()
-    v0_expert = current_v[expert_mask].mean()
-    v0_non_expert = current_v[non_expert_mask].mean()
-    loss_dict['v0_expert'] = v0_expert.item()
-    loss_dict['v0_non_expert'] = v0_non_expert.item()
+    if log_this_step:
+        v0_expert = current_v[expert_mask].mean()
+        v0_non_expert = current_v[non_expert_mask].mean()
+        loss_dict['v0_expert'] = v0_expert.item()
+        loss_dict['v0_non_expert'] = v0_non_expert.item()
     # loss_dict['v0_non_expert_std'] = current_v[non_expert_mask].std(unbiased=False).item()
     # loss_dict['Q_expert'] = current_Q[expert_mask].item()
     # loss_dict['Q_non_expert'] = current_Q[non_expert_mask].item()
@@ -36,14 +37,16 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
     else:
         y = (1-done) * gamma * next_v
     reward = (current_Q - y)[is_expert]
-    loss_dict['expert_reward'] = reward.mean().item()
-    loss_dict['non_expert_reward'] = (current_Q - y)[~is_expert].mean().item()
+    if log_this_step:
+        loss_dict['expert_reward'] = reward.mean().item()
+        loss_dict['non_expert_reward'] = (current_Q - y)[~is_expert].mean().item()
 
     penalty_u = _compute_dynamics_penalty(agent, batch) if args.method.penalty else None
-    loss_dict['penalty'] = penalty_u.mean().item() if penalty_u is not None else 0.0
-    if penalty_u is not None:
-        loss_dict['penalty_expert'] = penalty_u[expert_mask].mean().item()
-        loss_dict['penalty_non_expert'] = penalty_u[non_expert_mask].mean().item()
+    if log_this_step:
+        # loss_dict['penalty'] = penalty_u.mean().item() if penalty_u is not None else 0.0
+        if penalty_u is not None:
+            loss_dict['penalty_expert'] = penalty_u[expert_mask].mean().item()
+            loss_dict['penalty_non_expert'] = penalty_u[non_expert_mask].mean().item()
 
     if penalty_u is not None:
         reward = reward + penalty_u[is_expert]
@@ -67,7 +70,8 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         else:
             phi_grad = 1
     loss = -(phi_grad * reward).mean()
-    loss_dict['softq_loss'] = loss.item()
+    if log_this_step:
+        loss_dict['softq_loss'] = loss.item()
 
     # calculate 2nd term for IQ loss, we show different sampling strategies
     if args.method.loss == "value_expert":
@@ -75,28 +79,32 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         # E_(ρ)[Q(s,a) - γV(s')]
         value_loss = (current_v - y)[is_expert].mean()
         loss += value_loss
-        loss_dict['value_loss'] = value_loss.item()
+        if log_this_step:
+            loss_dict['value_loss'] = value_loss.item()
 
     elif args.method.loss == "value":
         # sample using expert and policy states (works online)
         # E_(ρ)[V(s) - γV(s')]
         value_loss = (current_v - y).mean()
         loss += args.value_ratio*value_loss
-        loss_dict['value_loss'] = value_loss.item()
+        if log_this_step:
+            loss_dict['value_loss'] = value_loss.item()
 
     elif args.method.loss == "value_supplement":
         # sample using expert and policy states (works online)
         # E_(ρ)[V(s) - γV(s')]
         value_loss = (current_v - y)[~is_expert].mean()
         loss += args.value_ratio*value_loss
-        loss_dict['value_loss'] = value_loss.item()
+        if log_this_step:
+            loss_dict['value_loss'] = value_loss.item()
 
     elif args.method.loss == "v0":
         # alternate sampling using only initial states (works offline but usually suboptimal than `value_expert` startegy)
         # (1-γ)E_(ρ0)[V(s0)]
         v0_loss = (1 - gamma) * v0
         loss += v0_loss
-        loss_dict['v0_loss'] = v0_loss.item()
+        if log_this_step:
+            loss_dict['v0_loss'] = v0_loss.item()
 
     # alternative sampling strategies for the sake of completeness but are usually suboptimal in practice
     # elif args.method.loss == "value_policy":
@@ -125,7 +133,8 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
                                             obs[~is_expert.squeeze(1), ...],
                                             action[~is_expert.squeeze(1), ...],
                                             args.method.lambda_gp)
-        loss_dict['gp_loss'] = gp_loss.item()
+        if log_this_step:
+            loss_dict['gp_loss'] = gp_loss.item()
         loss += gp_loss
 
     if args.method.div == "chi" or args.method.chi:  # TODO: Deprecate method.chi argument for method.div
@@ -133,11 +142,14 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         y = (1 - done) * gamma * next_v
 
         reward = current_Q - y
-        # print(args.method.alpha)
-        # exit()
+        
+        if penalty_u is not None:
+            reward = reward + penalty_u
+
         chi2_loss = 1/(4 * args.method.alpha) * (reward**2)[is_expert].mean()
         loss += chi2_loss
-        loss_dict['chi2_loss'] = chi2_loss.item()
+        if log_this_step:
+            loss_dict['chi2_loss'] = chi2_loss.item()
 
     if args.method.regularize:
         # Use χ2 divergence (calculate the regularization term for IQ loss using expert and policy states) (works online)
@@ -147,7 +159,8 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         # reward = (current_Q - y)[~is_expert]
         chi2_loss = 1/(4 * args.method.alpha) * (reward**2).mean()
         loss += chi2_loss
-        loss_dict['regularize_loss'] = chi2_loss.item()
+        if log_this_step:
+            loss_dict['regularize_loss'] = chi2_loss.item()
     # else:
     #     y = (1 - done) * gamma * next_v
     #     reward = current_Q - y
@@ -181,13 +194,13 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
             # jensen–shannon
             constrain_loss = (torch.relu(reward - math.log(2.0)))**2
         else:
-            constrain_loss = (torch.relu(reward - args.right))**2 + (torch.relu(args.left - reward))**2
+            # constrain_loss = (torch.relu(reward - args.right))**2 + (torch.relu(args.left - reward))**2
 
             # constrain_loss = torch.relu(reward - args.right) + torch.relu(args.left - reward)
 
-            # diff_high = torch.relu(reward - args.right)
-            # diff_low = torch.relu(args.left - reward)
-            # constrain_loss =F.smooth_l1_loss(diff_high, torch.zeros_like(diff_high), reduction='none')+F.smooth_l1_loss(diff_low, torch.zeros_like(diff_high), reduction='none')
+            diff_high = torch.relu(reward - args.right)
+            diff_low = torch.relu(args.left - reward)
+            constrain_loss =F.smooth_l1_loss(diff_high, torch.zeros_like(diff_high), reduction='none')+F.smooth_l1_loss(diff_low, torch.zeros_like(diff_high), reduction='none')
            
         constraint_mean = constrain_loss.mean()
 
@@ -220,11 +233,12 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         loss += (penalty * constrain_loss).mean()
         # loss += (penalty * constrain_loss)[expert_mask].mean()
 
-        loss_dict['constrain_loss'] = (penalty * constrain_loss).mean().item()
-        loss_dict['constrain_loss_expert'] = (penalty * constrain_loss)[expert_mask].mean().item()
-        loss_dict['constrain_loss_non_expert'] = (penalty * constrain_loss)[~expert_mask].mean().item()
-        loss_dict['constrain_loss_non_expert_positive'] = (torch.relu(reward - args.right))[~expert_mask].mean().item()
-        loss_dict['penalty_alpha'] = float(penalty.item())
+        if log_this_step:
+            loss_dict['constrain_loss'] = (penalty * constrain_loss).mean().item()
+            loss_dict['constrain_loss_expert'] = (penalty * constrain_loss)[expert_mask].mean().item()
+            loss_dict['constrain_loss_non_expert'] = (penalty * constrain_loss)[~expert_mask].mean().item()
+            loss_dict['constrain_loss_non_expert_positive'] = (torch.relu(reward - args.right))[~expert_mask].mean().item()
+            loss_dict['penalty_alpha'] = float(penalty.item())
 
         # non_expert_constrain_loss = (penalty * constrain_loss)[~expert_mask].mean()
         # critic_params = [p for p in agent.critic.parameters() if p.requires_grad]
@@ -286,7 +300,8 @@ def iq_loss(agent, current_Q, current_v, next_v, batch):
         
 
 
-    loss_dict['total_loss'] = loss.item()
+    if log_this_step:
+        loss_dict['total_loss'] = loss.item()
     return loss, loss_dict
 
 
@@ -297,9 +312,6 @@ def _compute_dynamics_penalty(agent, batch):
     dynamics ensemble, target critic or current actor sampling. Returns a 1D
     tensor aligned with ``(current_Q - y)``.
 
-    Sign convention: larger uncertainty -> larger penalty subtracted from the
-    implicit reward, i.e. we return ``coef * U`` so the caller can
-    keep the natural ``reward = reward + penalty`` formulation.
     """
     args = agent.args
     obs, _next_obs, action, _r, _done, is_expert = batch

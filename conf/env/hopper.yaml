@@ -3,7 +3,7 @@
 left: -2
 right: 2
 penalty: 0.5
-agent.actor_lr: 3e-4
+agent.actor_lr: 3e-5
 agent.init_temp: 1
 env:
   name: Hopper-v2

@@ -3,7 +3,7 @@
 left: -10
 right: 10
 penalty: 0.1
-agent.actor_lr: 0.0003
+agent.actor_lr: 3e-5
 agent.init_temp: 0.1
 env:
   name: Ant-v2

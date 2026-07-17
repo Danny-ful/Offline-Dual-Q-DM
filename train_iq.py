@@ -388,6 +388,7 @@ def iq_learn_update(self, policy_batch, expert_batch, logger, step):
 
 def iq_update_critic(self, policy_batch, expert_batch, logger, step):
     args = self.args
+    log_this_step = step % args.log_interval == 0
     policy_obs, policy_next_obs, policy_action, policy_reward, policy_done = policy_batch
     expert_obs, expert_next_obs, expert_action, expert_reward, expert_done = expert_batch
 
@@ -408,8 +409,8 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
 
     if "DoubleQ" in self.args.q_net._target_:
         current_Q1, current_Q2 = self.critic(obs, action, both=True)
-        q1_loss, loss_dict1 = iq_loss(agent, current_Q1, current_V, next_V, batch)
-        q2_loss, loss_dict2 = iq_loss(agent, current_Q2, current_V, next_V, batch)
+        q1_loss, loss_dict1 = iq_loss(agent, current_Q1, current_V, next_V, batch, log_this_step=log_this_step)
+        q2_loss, loss_dict2 = iq_loss(agent, current_Q2, current_V, next_V, batch, log_this_step=log_this_step)
         critic_loss = 1/2 * (q1_loss + q2_loss)
         # merge loss dicts
         loss_dict = average_dicts(loss_dict1, loss_dict2)
@@ -417,15 +418,16 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
         # Track Q1-Q2 disagreement: a temperature gauge for DoubleQ stability.
         # Healthy: rises and plateaus. Oscillating -> race-to-bottom on min target.
         # Collapses to 0 -> heads degenerate, DoubleQ loses its benefit.
-        with torch.no_grad():
-            q_disagree = (current_Q1 - current_Q2).abs().mean()
-        loss_dict["diagnostics/q_disagree"] = q_disagree.item()
-        logger.log("train/q_disagree", q_disagree, step)
+        if log_this_step:
+            with torch.no_grad():
+                q_disagree = (current_Q1 - current_Q2).abs().mean()
+            loss_dict["diagnostics/q_disagree"] = q_disagree.item()
+            logger.log("train/q_disagree", q_disagree, step)
     else:
         current_Q = self.critic(obs, action)
-        critic_loss, loss_dict = iq_loss(agent, current_Q, current_V, next_V, batch)
+        critic_loss, loss_dict = iq_loss(agent, current_Q, current_V, next_V, batch, log_this_step=log_this_step)
 
-    if getattr(self, "actor", None) is not None:
+    if log_this_step and getattr(self, "actor", None) is not None:
         with torch.no_grad():
             expert_actor_action = self.actor(expert_obs).mean
             policy_actor_action = self.actor(policy_obs).mean
@@ -455,7 +457,8 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
         logger.log("train/actor_action_mse_to_expert_on_expert_obs", expert_actor_action_mse, step)
         logger.log("train/actor_action_mse_to_dataset_on_supplement_obs", sup_dataset_mse, step)
 
-    logger.log('train/critic_loss', critic_loss, step)
+    if log_this_step:
+        logger.log('train/critic_loss', critic_loss, step)
 
     # Optimize the critic
     self.critic_optimizer.zero_grad()
@@ -469,10 +472,12 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
 
 
 def iq_update(self, policy_buffer, expert_buffer, logger, step):
-    policy_batch = policy_buffer.get_samples(4*self.batch_size, self.device)
+    # policy_batch = policy_buffer.get_samples(4*self.batch_size, self.device)
+    policy_batch = policy_buffer.get_samples(self.batch_size, self.device)
     expert_batch = expert_buffer.get_samples(self.batch_size, self.device)
 
     losses = self.iq_update_critic(policy_batch, expert_batch, logger, step)
+    log_this_step = step % self.args.log_interval == 0
 
     if self.actor and step % self.actor_update_frequency == 0:
         if not self.args.agent.vdice_actor:
@@ -487,9 +492,11 @@ def iq_update(self, policy_buffer, expert_buffer, logger, step):
                 for i in range(self.args.num_actor_updates):
                     if self.args.actor_bc:
                         actor_alpha_losses = self.update_actor_and_alpha(
-                            obs, logger, step, expert_batch[0], expert_batch[2])
+                            obs, logger, step, expert_batch[0], expert_batch[2],
+                            log_this_step=log_this_step)
                     else:
-                        actor_alpha_losses = self.update_actor_and_alpha(obs, logger, step)
+                        actor_alpha_losses = self.update_actor_and_alpha(
+                            obs, logger, step, log_this_step=log_this_step)
 
             losses.update(actor_alpha_losses)
 

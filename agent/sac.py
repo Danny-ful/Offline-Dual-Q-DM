@@ -32,7 +32,9 @@ class SAC(object):
             self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
-        self.actor = hydra.utils.instantiate(agent_cfg.actor_cfg).to(self.device)
+        self.actor = hydra.utils.instantiate(
+            agent_cfg.actor_cfg, obs_dim=obs_dim, action_dim=action_dim
+        ).to(self.device)
 
         self.log_alpha = torch.tensor(np.log(agent_cfg.init_temp)).to(self.device)
         self.log_alpha.requires_grad = True
@@ -139,7 +141,7 @@ class SAC(object):
             'critic_loss/critic_2': q2_loss.item(),
             'loss/critic': critic_loss.item()}
 
-    def update_actor_and_alpha(self, obs, logger, step, bc_obs=None, bc_action=None):
+    def update_actor_and_alpha(self, obs, logger, step, bc_obs=None, bc_action=None, log_this_step=True):
         action, log_prob, _ = self.actor.sample(obs)
         actor_Q = self.critic(obs, action)
 
@@ -150,11 +152,12 @@ class SAC(object):
             bc_loss = F.mse_loss(actor_mean, bc_action)
             actor_loss = actor_loss + float(self.args.actor_bc_coef) * bc_loss
 
-        logger.log('train/actor_loss', actor_loss, step)
-        logger.log('train/target_entropy', self.target_entropy, step)
-        logger.log('train/actor_entropy', -log_prob.mean(), step)
-        if bc_loss is not None:
-            logger.log('train/actor_bc_loss', bc_loss, step)
+        if log_this_step:
+            logger.log('train/actor_loss', actor_loss, step)
+            logger.log('train/target_entropy', self.target_entropy, step)
+            logger.log('train/actor_entropy', -log_prob.mean(), step)
+            if bc_loss is not None:
+                logger.log('train/actor_bc_loss', bc_loss, step)
 
         # optimize the actor
         self.actor_optimizer.zero_grad()
@@ -163,29 +166,33 @@ class SAC(object):
         if self.she:
             self.scheduler.step()
 
-        losses = {
-            'loss/actor': actor_loss.item(),
-            'actor_loss/target_entropy': self.target_entropy,
-            'actor_loss/entropy': -log_prob.mean().item()}
-        if bc_loss is not None:
-            losses['loss/actor_bc'] = bc_loss.item()
-        losses['lr'] = self.actor_optimizer.param_groups[0]["lr"]
+        losses = {}
+        if log_this_step:
+            losses = {
+                'loss/actor': actor_loss.item(),
+                'actor_loss/target_entropy': self.target_entropy,
+                'actor_loss/entropy': -log_prob.mean().item()}
+            if bc_loss is not None:
+                losses['loss/actor_bc'] = bc_loss.item()
+            losses['lr'] = self.actor_optimizer.param_groups[0]["lr"]
         
         # self.actor.log(logger, step)
         if self.learn_temp:
             self.log_alpha_optimizer.zero_grad()
             alpha_loss = (self.alpha *
                           (-log_prob - self.target_entropy).detach()).mean()
-            logger.log('train/alpha_loss', alpha_loss, step)
-            logger.log('train/alpha_value', self.alpha, step)
+            if log_this_step:
+                logger.log('train/alpha_loss', alpha_loss, step)
+                logger.log('train/alpha_value', self.alpha, step)
 
             alpha_loss.backward()
             self.log_alpha_optimizer.step()
 
-            losses.update({
-                'alpha_loss/loss': alpha_loss.item(),
-                'alpha_loss/value': self.alpha.item(),
-            })
+            if log_this_step:
+                losses.update({
+                    'alpha_loss/loss': alpha_loss.item(),
+                    'alpha_loss/value': self.alpha.item(),
+                })
         return losses
 
     # Save model parameters

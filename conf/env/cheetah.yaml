@@ -3,7 +3,7 @@
 left: -1
 right: 1
 penalty: 0.5
-agent.actor_lr: 0.0003
+agent.actor_lr: 3e-5
 agent.init_temp: 0.001
 env:
   name: HalfCheetah-v2

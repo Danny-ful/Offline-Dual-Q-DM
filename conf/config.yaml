@@ -40,7 +40,7 @@ env:
   eps_steps: 1000
   eps_window: 100
   learn_steps: 5e5
-  eval_interval: 5e3
+  eval_interval: 1e4
 
   # use pixels
   from_pixels: False

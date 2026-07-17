@@ -27,7 +27,7 @@ method:
   penalty_lr: 0.01
   penalty_min: 0.0
   penalty_max: 1e6
-  penalty_coef: 1.0
+  penalty_coef: 0.1
   penalty_N: 5        # ensemble size (must match train_dynamics.py)
   penalty_M: 10       # samples per ensemble member
   dynamics_ckpt: ''   # e.g. dynamics/hopper/ensemble_5.pt

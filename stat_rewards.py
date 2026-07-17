@@ -49,10 +49,10 @@ def main() -> None:
     parser.add_argument(
         "--data",
         type=Path,
-        default=Path("experts/Hopper-v2_d4rl.pkl"),
-        help="expert 数据集路径，默认: experts/Hopper-v2_d4rl.pkl",
-        # default=Path("supplement/Hopper-v2_d4rl.pkl"),
-        # help="expert 数据集路径，默认: supplement/Hopper-v2_d4rl.pkl",
+        default=Path("experts/walker2d_full_replay-v2.pkl"),
+        help="expert 数据集路径，默认: experts/walker2d_full_replay-v2.pkl",
+        # default=Path("supplement/walker2d_full_replay-v2.pkl"),
+        # help="supplement 数据集路径，默认: supplement/walker2d_full_replay-v2.pkl.pkl",
     )
     parser.add_argument(
         "--show-all",

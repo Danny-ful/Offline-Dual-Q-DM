@@ -1,68 +1,76 @@
 program: train_iq.py
-name: hopper-offline-stability-bayes
-method: bayes
+name: halfcheetah-offline-stability-grid
+method: grid
 
 metric:
   name: eval/episode_reward
   goal: maximize
 
-early_terminate:
-  type: hyperband
-  min_iter: 8
-  eta: 2
-
 command:
   - ${env}
   - python
   - ${program}
-  - env=hopper
+  - env=cheetah
   - agent=sac
   - offline=True
-  - env.demo=Hopper-v2_d4rl.pkl
+  - env.demo=halfcheetah_full_replay-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
+  - train.batch=512
   - method.loss=value
   - method.constrain=True
   - train.use_target=True
   - train.soft_update=True
-  - cliptarget=True
+  - agent.critic_lr=3e-4 
+  - agent.critic_tau=0.005 
+  - num_actor_updates=1 
+  - method.grad_pen=False
+  - cliptarget=False
+  - agent.learn_temp=False
   - schedular=False
-  - method.grad_pen=True
+  - cuda_deterministic=False
+  - method.regularize=False
+  - method.chi=True
+  - actor_expert_offline=False
   - project_name=Offline-Dual-Q-DM
-  - exp_name=sweep_hopper_bayes
+  - exp_name=sweep_halfcheetah_grid
+  - method.penalty=True
+  - method.penalty_auto=True
+  - method.penalty_N=5
+  - method.dynamics_ckpt=dynamics/HalfCheetah-v2/ensemble_5.pt
   - ${args_no_hyphens}
+  - q_net._target_=agent.sac_models.DoubleQCritic
+
 
 parameters:
   seed:
     values: [0]
 
-  # Critic stability knobs
-  train.batch:
-    values: [512]
-  agent.critic_lr:
-    values: [1e-4, 2e-4, 5e-4]
-  agent.critic_tau:
-    values: [0.001, 0.1, 1.0]
-
-  # Actor pace knobs
-  agent.actor_lr:
-    values: [1e-5, 2e-5, 5e-5]
-  agent.actor_update_frequency:
-    values: [1, 2]
-  num_actor_updates:
-    values: [1, 2]
-
-  # IQ constraint knobs
-  penalty:
-    values: [5, 10, 15]
   left:
-    values: [-1, -0.9]
+    values: [-1.5, -2.0, -1.0]
   right:
-    values: [1, 0.9]
+    values: [1.0, 1.5]
 
-  method.lambda_gp:
-    values: [10]
+  agent.init_temp:
+    values: [0.5]
 
-  # Temporal credit assignment
-  # gamma:
-  #   values: [0.98, 0.99]
+  method.penalty_target:
+    values: [5]
+
+  method.alpha:
+    values: [0.5, 0.75]
+
+  value_ratio:
+    values: [1.0]
+
+  agent.actor_lr:
+    values: [6e-5]
+
+  agent.actor_update_frequency:
+    values: [1]
+
+  method.penalty_lr:
+    values: [5e-3, 1e-2]
+
+  method.penalty_coef:
+    values: [0.1, 0.2]

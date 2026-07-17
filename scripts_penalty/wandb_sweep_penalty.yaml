@@ -1,19 +1,11 @@
 program: train_iq.py
-name: hopper-offline-penalty-sweep
-method: bayes
+name: hopper-offline-stability-grid
+method: grid
 
 metric:
   name: eval/episode_reward
   goal: maximize
 
-early_terminate:
-  type: hyperband
-  min_iter: 8
-  eta: 2
-
-# NOTE: Run train_dynamics.py BEFORE launching this sweep so that
-#   dynamics/hopper/ensemble_<N>.pt exists. method.penalty_N in this
-#   sweep MUST match the N used when producing the checkpoint.
 command:
   - ${env}
   - python
@@ -28,72 +20,35 @@ command:
   - method.constrain=True
   - train.use_target=True
   - train.soft_update=True
-  - cliptarget=True
+  - agent.critic_lr=3e-4 
+  - agent.critic_tau=0.005 
+  - agent.actor_lr=3e-5 
+  - agent.actor_update_frequency=1 
+  - num_actor_updates=1 
+  - method.grad_pen=False
+  - cliptarget=False
   - schedular=False
-  - method.grad_pen=True
+  - cuda_deterministic=True
+  - project_name=Offline-Dual-Q-DM
+  - exp_name=sweep_hopper_grid
   - method.penalty=True
+  - method.penalty_auto=True
+  - method.penalty_lr=1e-2
   - method.penalty_N=5
   - method.dynamics_ckpt=dynamics/Hopper-v2/ensemble_5.pt
-  - project_name=Offline-Dual-Q-DM
-  - exp_name=sweep_hopper_penalty
   - ${args_no_hyphens}
 
 parameters:
   seed:
     values: [0]
 
-  # ---- Tier 0: Penalty knobs (main focus) ----
-  # penalty_coef 跨数量级扫，因为它直接乘在 γ·Std 上
-  method.penalty_coef:
-    values: [0.01, 0.1, 0.3, 1.0, 3.0, 10.0]
-  # M 决定 E_M 近似的方差；太小噪声大，太大算力贵
-  method.penalty_M:
-    values: [5, 10, 20]
-
-  # ---- Tier 1: critic stability (与 penalty 强耦合) ----
-  train.batch:
-    values: [256, 512]
-  agent.critic_lr:
-    values: [1e-4, 2e-4, 3e-4, 5e-4]
-  # target EMA：小 tau 平滑但滞后，大 tau 跟得快但更抖
-  agent.critic_tau:
-    values: [0.005, 0.01, 0.05, 0.1]
-  agent.critic_target_update_frequency:
-    values: [1, 2]
-
-  # ---- Tier 1: actor pace ----
-  agent.actor_lr:
-    values: [1e-5, 3e-5, 1e-4, 3e-4]
-  agent.actor_update_frequency:
-    values: [1, 2]
-  num_actor_updates:
-    values: [1, 2]
-
-  # ---- Tier 2: entropy / temperature ----
-  # init_temp 决定 a'_j ~ π_φ 的锐利度，间接影响 penalty 的 Q 统计
-  agent.init_temp:
-    values: [1e-3, 1e-2, 1e-1]
-
-  # ---- Tier 3: IQ constraint knobs ----
-  # 注意：top-level `penalty` 是 constrain_loss 的权重，不是 dynamics penalty
-  penalty:
-    values: [15, 5, 10]
   left:
-    values: [-1, -0.9]
+    values: [-2.0, -1.5, -1.0]
   right:
-    values: [1, 0.9]
-  method.lambda_gp:
-    values: [10]
+    values: [1.0, 0.8]
 
-  # ---- Tier 2 (optional): discount ----
-  # gamma 变大会同时放大 penalty 中的 γ 前缀
-  gamma:
-    values: [0.99]
+  agent.init_temp:
+    values: [0.5, 1.0, 0.1]
 
-  # ---- Optional structural knobs (uncomment to enable) ----
-  # method.div:
-  #   values: [null, chi, kl_fix]
-  # method.alpha:
-  #   values: [0.5, 1.0]
-  # diag_gaussian_actor.log_std_bounds:
-  #   values: [[-5, 2], [-10, 2]]
+  method.penalty_target:
+    values: [5, 3]

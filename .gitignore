@@ -22,3 +22,5 @@ wandb/
 
 # sweep logs
 *.log
+supplement/
+experts/
