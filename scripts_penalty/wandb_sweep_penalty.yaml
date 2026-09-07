@@ -31,7 +31,7 @@ command:
   - cuda_deterministic=True
   - project_name=Offline-Dual-Q-DM
   - exp_name=sweep_hopper_grid
-  - method.penalty=True
+  - method.uncertainty=True
   - method.penalty_auto=True
   - method.penalty_lr=1e-2
   - method.penalty_N=5

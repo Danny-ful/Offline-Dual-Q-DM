@@ -41,7 +41,7 @@ def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False):
         loss_dict['expert_reward'] = reward.mean().item()
         loss_dict['non_expert_reward'] = (current_Q - y)[~is_expert].mean().item()
 
-    penalty_u = _compute_dynamics_penalty(agent, batch) if args.method.penalty else None
+    penalty_u = _compute_dynamics_penalty(agent, batch) if args.method.uncertainty else None
     if log_this_step:
         # loss_dict['penalty'] = penalty_u.mean().item() if penalty_u is not None else 0.0
         if penalty_u is not None:
@@ -318,8 +318,8 @@ def _compute_dynamics_penalty(agent, batch):
 
     if not hasattr(agent, "dynamics_ensemble"):
         raise RuntimeError(
-            "method.penalty=True but agent.dynamics_ensemble is not set. "
-            "Make sure the ensemble checkpoint is loaded in train_iq.py."
+            "method.uncertainty=True but agent.dynamics_ensemble is not set. "
+            "Make sure the training entry point loads the ensemble checkpoint."
         )
     if getattr(agent, "actor", None) is None:
         # SoftQ (discrete actions) path is not supported here.

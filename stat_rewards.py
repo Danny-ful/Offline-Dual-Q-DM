@@ -49,10 +49,12 @@ def main() -> None:
     parser.add_argument(
         "--data",
         type=Path,
-        default=Path("experts/walker2d_full_replay-v2.pkl"),
-        help="expert 数据集路径，默认: experts/walker2d_full_replay-v2.pkl",
-        # default=Path("supplement/walker2d_full_replay-v2.pkl"),
-        # help="supplement 数据集路径，默认: supplement/walker2d_full_replay-v2.pkl.pkl",
+        default=Path("experts/hopper_full.pkl"),
+        help="expert 数据集路径，默认: experts/hopper.pkl",
+        # default=Path("supplement/ant_full_replay-v2.pkl"),
+        # help="supplement 数据集路径，默认: supplement/ant_full_replay-v2.pkl",
+        # default=Path("supplement/Ant-v2_expert_sac.pkl"),
+        # help="supplement 数据集路径，默认: supplement/Ant-v2_expert_sac.pkl",
     )
     parser.add_argument(
         "--show-all",
@@ -103,5 +105,37 @@ def main() -> None:
     print(f"总回报和: {np.sum(traj_returns):.6f}")
 
 
+def compare_halfcheetah() -> None:
+    """对比 halfcheetah_full_replay-v2 与 HalfCheetah-v2_expert_sac 的单步平均奖励。"""
+    supplement_dir = Path(__file__).parent / "supplement"
+    datasets = {
+        "halfcheetah_full_replay-v2": supplement_dir / "halfcheetah_full_replay-v2.pkl",
+        "HalfCheetah-v2_expert_sac": supplement_dir / "HalfCheetah-v2_expert_sac.pkl",
+    }
+
+    print("\n" + "=" * 72)
+    print("HalfCheetah 单步平均奖励对比")
+    print("=" * 72)
+    print(f"{'数据集':<30} {'总步数':>10} {'奖励总和':>14} {'单步平均奖励':>14}")
+    print("-" * 72)
+
+    for name, path in datasets.items():
+        if not path.is_file():
+            print(f"{name:<30} 文件不存在: {path}")
+            continue
+        data = load_dataset(path)
+        rewards = np.asarray(data["rewards"][0], dtype=np.float64)
+        total_steps = len(rewards)
+        reward_sum = float(np.sum(rewards))
+        mean_per_step = float(np.mean(rewards))
+        print(f"{name:<30} {total_steps:>10d} {reward_sum:>14.2f} {mean_per_step:>14.6f}")
+
+    print()
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--compare" in sys.argv:
+        compare_halfcheetah()
+    else:
+        main()

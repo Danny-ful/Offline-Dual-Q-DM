@@ -1,0 +1,129 @@
+# Robosuite IQ-Learn Training Configuration
+
+defaults:
+  - agent: sac
+  - _self_
+
+# Project settings
+project_name: "iq_learn_robosuite"
+exp_name: null  # Auto-generated if null
+
+# System
+device: cuda:0
+cuda_deterministic: false
+seed: 0
+log_dir: logs
+log_interval: 1000
+save_interval: 10  # Save networks every this many epochs (in thousands of steps)
+
+# Discount factor
+gamma: 0.99
+
+left: -1
+right: 1
+
+# Learning rate scheduler
+schedular: false
+
+# Additional training parameters
+penalty: 10
+cliptarget: true
+usereal: false
+value_ratio: 1
+num_seed_steps: 0
+eval_only: false
+actor_expert_offline: false
+actor_bc: false
+actor_bc_coef: 1.0
+
+# Robosuite specific settings
+robosuite:
+  task: "lift"  # Options: "lift", "can" (corresponds to PickPlaceCan)
+  obs_keys:
+    - object
+    - robot0_eef_pos
+    - robot0_eef_quat
+    - robot0_gripper_qpos
+
+  # Expert dataset configuration
+  expert_dataset_type: "ph"  # Options: "ph" (expert), "mh" (multi-human), "mg" (machine-generated)
+  expert_hdf5_type: "low_dim"  # Options: "low_dim", "low_dim_sparse", "low_dim_dense"
+  expert_trajs: null  # Number of expert trajectories to load (null = all)
+
+  # Supplement/Policy dataset configuration
+  supplement_dataset_type: "mg"  # Options: "ph", "mh", "mg"
+  supplement_hdf5_type: "low_dim_sparse"  # Options: "low_dim", "low_dim_sparse", "low_dim_dense"
+  supplement_trajs: null  # Number of supplement trajectories (null = all)
+  use_supplement: true  # Whether to use supplement data
+
+  # null preserves the robot stored in the dataset metadata. Set explicitly only
+  # when evaluating a dataset without compatible metadata.
+  robot: null
+
+  # Training
+  learn_steps: 100000  # Total training steps
+
+  # Evaluation
+  eval_on_env: true  # Whether to evaluate on actual robosuite environment
+  eval_interval: 5000  # Evaluation frequency
+  eval_episodes: 10  # Number of episodes per evaluation
+  # null uses the metadata value, or Robosuite's default when the dataset did
+  # not record a horizon. Set this explicitly for a known non-default horizon.
+  eval_horizon: null
+
+  # Checkpointing
+  save_interval: 10000  # Model checkpoint frequency
+
+# Eval settings
+eval:
+  eps: 10
+  stochastic: false
+
+# Training settings
+train:
+  use_target: true
+  soft_update: true
+  batch: 256  # Batch size for training
+
+# Method settings (IQ-Learn)
+method:
+  type: "iq"
+  loss: "value"
+  regularize: false
+  alpha: 0.5  # χ2 divergence coefficient
+
+  constrain: true
+  grad_pen: false
+  chi: true
+  tanh: false
+  div: null
+
+  cql: false
+  cql_alpha: 1.0
+  cql_temp: 1.0
+  cql_n_actions: 10
+
+  lambda_gp: 10
+  mix_coeff: 1
+
+  # Dynamics-uncertainty penalty
+  uncertainty: false
+  penalty_auto: true
+  penalty_target: 5.0
+  penalty_lr: 0.001
+  penalty_min: 0.0
+  penalty_max: 10000
+  penalty_coef: 1.0
+  penalty_N: 5
+  penalty_M: 10
+  dynamics_ckpt: ""
+
+# Agent training
+num_actor_updates: 1
+
+# Pretrained model (optional)
+pretrain: null
+
+# Offline mode
+offline: true
+only_expert_states: false

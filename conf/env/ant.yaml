@@ -19,12 +19,20 @@ env:
   learn_steps: 5e5
   eval_interval: 5e3
 
+  # Reduce observation space from 111 to 27 dims
+  # (removes always-zero cfrc_ext contact forces)
+  reduce_obs_dim: true
+  effective_obs_dim: 27
+
+dyn:
+  effective_obs_dim: 27
+
 expert:
   demos: 1
   subsample_freq: 1
 
 eval:
-  policy: 
+  policy:
   threshold: 4500
 
 agent:

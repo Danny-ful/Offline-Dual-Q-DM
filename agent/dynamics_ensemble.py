@@ -90,15 +90,19 @@ class DynamicsEnsemble(nn.Module):
         hidden_depth: int = 3,
         log_std_min: float = -10.0,
         log_std_max: float = 2.0,
+        effective_obs_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.N = N
+        # When set, the model only operates on the first effective_obs_dim dims
+        # and pads the rest with zeros on output.
+        self.effective_obs_dim = effective_obs_dim or obs_dim
         self.members = nn.ModuleList(
             [
                 ProbDynamics(
-                    obs_dim,
+                    self.effective_obs_dim,
                     action_dim,
                     hidden_dim=hidden_dim,
                     hidden_depth=hidden_depth,
@@ -109,8 +113,19 @@ class DynamicsEnsemble(nn.Module):
             ]
         )
 
+    def _slice_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.effective_obs_dim < self.obs_dim:
+            return obs[..., : self.effective_obs_dim]
+        return obs
+
+    def _pad_obs(self, obs_short: torch.Tensor, full_obs: torch.Tensor) -> torch.Tensor:
+        if self.effective_obs_dim < self.obs_dim:
+            pad = full_obs[..., self.effective_obs_dim:]
+            return torch.cat([obs_short, pad], dim=-1)
+        return obs_short
+
     def forward(self, i: int, obs: torch.Tensor, action: torch.Tensor):
-        return self.members[i](obs, action)
+        return self.members[i](self._slice_obs(obs), action)
 
     @torch.no_grad()
     def sample_next_ensemble(
@@ -118,16 +133,24 @@ class DynamicsEnsemble(nn.Module):
     ) -> torch.Tensor:
         """Return samples of shape [B, N, M, obs_dim]."""
         B = obs.size(0)
-        # broadcast obs/action over M samples by feeding the same (obs,action) M times
-        obs_rep = obs.unsqueeze(1).expand(B, M, -1).reshape(B * M, -1)
+        obs_eff = self._slice_obs(obs)
+        obs_rep = obs_eff.unsqueeze(1).expand(B, M, -1).reshape(B * M, -1)
         action_rep = action.unsqueeze(1).expand(B, M, -1).reshape(B * M, -1)
 
         out = obs.new_empty(B, self.N, M, self.obs_dim)
+        # Keep the ignored dims from the original obs for padding
+        pad_dims = obs[:, self.effective_obs_dim:]  # [B, obs_dim - eff]
         for i, member in enumerate(self.members):
             mean, log_std = member(obs_rep, action_rep)
             eps = torch.randn_like(mean)
-            s_next = obs_rep + mean + torch.exp(log_std) * eps
-            out[:, i] = s_next.view(B, M, self.obs_dim)
+            s_next_short = obs_rep + mean + torch.exp(log_std) * eps  # [B*M, eff]
+            s_next_short = s_next_short.view(B, M, self.effective_obs_dim)
+            if self.effective_obs_dim < self.obs_dim:
+                pad = pad_dims.unsqueeze(1).expand(B, M, -1)
+                s_next_full = torch.cat([s_next_short, pad], dim=-1)
+            else:
+                s_next_full = s_next_short
+            out[:, i] = s_next_full
         return out
 
     def save(self, path: str) -> None:
@@ -137,6 +160,7 @@ class DynamicsEnsemble(nn.Module):
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
                 "N": self.N,
+                "effective_obs_dim": self.effective_obs_dim,
             },
         }
         torch.save(payload, path)
@@ -146,14 +170,15 @@ class DynamicsEnsemble(nn.Module):
         if isinstance(payload, dict) and "state_dict" in payload:
             cfg = payload.get("cfg", {})
             if cfg:
-                assert cfg.get("obs_dim") == self.obs_dim, (
-                    f"obs_dim mismatch: ckpt={cfg.get('obs_dim')} vs module={self.obs_dim}"
-                )
                 assert cfg.get("action_dim") == self.action_dim, (
                     f"action_dim mismatch: ckpt={cfg.get('action_dim')} vs module={self.action_dim}"
                 )
                 assert cfg.get("N") == self.N, (
                     f"ensemble size mismatch: ckpt N={cfg.get('N')} vs module N={self.N}"
+                )
+                ckpt_eff = cfg.get("effective_obs_dim", cfg.get("obs_dim"))
+                assert ckpt_eff == self.effective_obs_dim, (
+                    f"effective_obs_dim mismatch: ckpt={ckpt_eff} vs module={self.effective_obs_dim}"
                 )
             self.load_state_dict(payload["state_dict"])
         else:

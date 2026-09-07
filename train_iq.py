@@ -78,19 +78,39 @@ def main(cfg: DictConfig):
 
     agent = make_agent(env, args)
 
-    if getattr(args.method, "penalty", False):
+    if getattr(args.method, "uncertainty", False):
         from agent.dynamics_ensemble import DynamicsEnsemble
         ckpt_path = args.method.dynamics_ckpt
         if not ckpt_path:
             raise ValueError(
-                "method.penalty=True but method.dynamics_ckpt is empty. "
+                "method.uncertainty=True but method.dynamics_ckpt is empty. "
                 "Please first run train_dynamics.py to produce the checkpoint."
             )
         ckpt_abs = hydra.utils.to_absolute_path(ckpt_path)
+        ckpt_meta = torch.load(ckpt_abs, map_location="cpu")
+        ckpt_cfg = ckpt_meta.get("cfg", {}) if isinstance(ckpt_meta, dict) else {}
+        effective_obs_dim = ckpt_cfg.get("effective_obs_dim", None)
+
+        # Infer hidden_dim and hidden_depth from checkpoint if not in config
+        hidden_dim = ckpt_cfg.get("hidden_dim", None)
+        hidden_depth = ckpt_cfg.get("hidden_depth", None)
+
+        if hidden_dim is None or hidden_depth is None:
+            # Infer from state_dict structure
+            state_dict = ckpt_meta.get("state_dict", ckpt_meta)
+            if "members.0.trunk.0.weight" in state_dict:
+                hidden_dim = state_dict["members.0.trunk.0.weight"].shape[0]
+            linear_keys = [k for k in state_dict.keys() if "members.0.trunk" in k and ".weight" in k]
+            hidden_depth = len(linear_keys) - 1
+            print(f"--> Inferred dynamics architecture: hidden_dim={hidden_dim}, hidden_depth={hidden_depth}")
+
         ens = DynamicsEnsemble(
             obs_dim=env.observation_space.shape[0],
             action_dim=env.action_space.shape[0],
             N=int(args.method.penalty_N),
+            effective_obs_dim=effective_obs_dim,
+            hidden_dim=hidden_dim,
+            hidden_depth=hidden_depth,
         ).to(args.device)
         ens.load(ckpt_abs, map_location=args.device)
         ens.eval()
@@ -117,26 +137,28 @@ def main(cfg: DictConfig):
     # BC trains purely from expert data; reuse the offline loop (no env interaction).
     data_only = bool(args.offline) or is_bc
 
-    demo_filename = os.path.basename(args.env.demo)
+    # Determine if we need to reduce observation dimension (for Ant-v2)
+    reduce_obs_dim = None
+    if args.env.name == 'Ant-v2' and args.env.get('reduce_obs_dim', False):
+        reduce_obs_dim = args.env.get('effective_obs_dim', 27)
+        print(f'--> Reducing observation dimension to {reduce_obs_dim} for {args.env.name}')
 
     # Load expert data
-    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed)
-    expert_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{demo_filename}'),
+    expert_path = hydra.utils.to_absolute_path(args.env.expert_path)
+    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed, reduce_obs_dim=reduce_obs_dim)
+    expert_memory_replay.load(expert_path,
                               num_trajs=args.expert.demos,
                               sample_freq=args.expert.subsample_freq,
                               seed=args.seed + 42)
     print(f'--> Expert memory size: {expert_memory_replay.size()}')
 
-    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed+1)
+    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed+1, reduce_obs_dim=reduce_obs_dim)
     if data_only and not is_bc:
-        supplement_path = hydra.utils.to_absolute_path(f'supplement/{demo_filename}')
+        supplement_path = hydra.utils.to_absolute_path(args.env.supplement_path)
         if not os.path.isfile(supplement_path):
             raise FileNotFoundError(
-                f"Offline mode requires supplement data at {supplement_path}. "
-                "Please export the matching file into supplement/ first."
+                f"Supplement data not found at {supplement_path}."
             )
-        # Keep expert.demos for expert loading, but load the full matching
-        # supplement dataset into the policy buffer.
         online_memory_replay.load(supplement_path,
                                   num_trajs=np.iinfo(np.int32).max,
                                   sample_freq=args.expert.subsample_freq,
@@ -189,7 +211,8 @@ def main(cfg: DictConfig):
         for episode_step in range(EPISODE_STEPS):
             if data_only:
                 if learn_steps % args.env.eval_interval == 0:
-                    eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps)
+                    eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
+                                                            stochastic=args.eval.stochastic)
                     returns = np.mean(eval_returns)
                     learn_steps += 1  # To prevent repeated eval at timestep 0
                     logger.log('eval/episode_reward', returns, learn_steps)
@@ -268,7 +291,8 @@ def main(cfg: DictConfig):
             steps += 1
 
             if learn_steps % args.env.eval_interval == 0:
-                eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps)
+                eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
+                                                        stochastic=args.eval.stochastic)
                 returns = np.mean(eval_returns)
                 learn_steps += 1  # To prevent repeated eval at timestep 0
                 logger.log('eval/episode_reward', returns, learn_steps)

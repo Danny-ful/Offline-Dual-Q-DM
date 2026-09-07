@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python -c \"import robomimic; print\\(robomimic.__path__[0]\\)\")",
+      "Bash(python /home/ubuntu/miniconda3/envs/iq_learn/lib/python3.8/site-packages/robomimic/scripts/download_datasets.py --help)",
+      "Read(//home/ubuntu/miniconda3/envs/iq_learn/lib/python3.8/site-packages/robomimic/scripts/**)",
+      "Bash(ls /home/ubuntu/laiwenqi/robomimic/robomimic/scripts/download_datasets.py 2>/dev/null && echo 'found' || echo 'not found')",
+      "Read(//home/ubuntu/laiwenqi/robomimic/robomimic/scripts/**)",
+      "Read(//home/ubuntu/laiwenqi/robomimic/**)",
+      "Bash(python robomimic/scripts/download_datasets.py --help)",
+      "Bash(ping -c 2 github.com)",
+      "Bash(ping -c 2 mirror.tuna.tsinghua.edu.cn)",
+      "Bash(pip config *)",
+      "Bash(git ls-remote *)",
+      "Bash(python download_robomimic_datasets.py)",
+      "Bash(python robomimic/scripts/download_datasets.py --tasks lift can --dataset_types ph mh mg --hdf5_types low_dim low_dim_sparse low_dim_dense --download_dir \"/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/robomimic\" --dry_run)",
+      "Bash(conda --version)",
+      "Bash(conda info *)",
+      "Bash(mkdir -p \"/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/robomimic/v1.5/lift/ph\")",
+      "Bash(wget -q --show-progress \"https://huggingface.co/datasets/robomimic/robomimic_datasets/resolve/main/v1.5/lift/ph/low_dim_v15.hdf5\" -O \"v1.5/lift/ph/low_dim_v15.hdf5\")",
+      "Bash(ping -c 3 huggingface.co)",
+      "Read(//etc/**)",
+      "Bash(ping -c 2 8.8.8.8)",
+      "Bash(chmod +x \"/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/scripts/run_robosuite_experiments.sh\")",
+      "Bash(chmod +x \"/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/quickstart_robomimic.sh\")",
+      "WebFetch(domain:robomimic.github.io)",
+      "Bash(python -c \"import h5py; f = h5py.File\\('robomimic/lift/ph/low_dim_v15.hdf5', 'r'\\); demo = list\\(f['data'].keys\\(\\)\\)[0]; obs_keys = sorted\\(list\\(f[f'data/{demo}/obs'].keys\\(\\)\\)\\); total_dim = sum\\(f[f'data/{demo}/obs/{k}'].shape[1] for k in obs_keys\\); print\\(f'Total obs dim: {total_dim}'\\); print\\(f'Obs keys: {obs_keys}'\\)\")",
+      "Bash(chmod +x \"/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/run_robosuite_stable.sh\")",
+      "Read(//home/ubuntu/laiwenqi/anaconda3/bin/**)",
+      "Read(//home/ubuntu/laiwenqi/anaconda3/envs/**)",
+      "Bash(/home/ubuntu/laiwenqi/anaconda3/bin/conda env *)",
+      "Bash(/home/ubuntu/laiwenqi/anaconda3/bin/python -c \"import torch, hydra, wandb; print\\('torch', torch.__version__\\)\")",
+      "Bash(/home/ubuntu/laiwenqi/anaconda3/bin/python -c \"import h5py; print\\('h5py ok', h5py.__version__\\)\")",
+      "Bash(/home/ubuntu/laiwenqi/anaconda3/bin/python -c \"import robosuite; print\\('robosuite ok'\\)\")",
+      "Bash(python3)",
+      "Bash(python diagnose_iq_loss.py)"
+    ]
+  }
+}

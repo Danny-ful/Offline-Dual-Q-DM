@@ -1,0 +1,51 @@
+program: train_iq_robosuite.py
+name: robosuite-iq-sweep
+method: grid
+
+metric:
+  name: eval/success_rate
+  goal: maximize
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - project_name=robosuite
+  # Keep the experiment setup identical to run_robosuite_experiments.sh.
+  - robosuite.task=can
+  - robosuite.expert_dataset_type=ph
+  - robosuite.expert_hdf5_type=low_dim
+  - robosuite.expert_trajs=null
+  - robosuite.supplement_dataset_type=mg
+  - robosuite.supplement_hdf5_type=low_dim_sparse
+  - robosuite.supplement_trajs=null
+  - robosuite.use_supplement=true
+  - robosuite.learn_steps=800000
+  - robosuite.eval_interval=5000
+  - robosuite.eval_episodes=10
+  - robosuite.eval_on_env=true
+  - eval.stochastic=false
+  - agent.learn_temp=false
+  - ${args_no_hyphens}
+
+parameters:
+  # Training configuration. The baseline batch size is included.
+  train.batch:
+    values: [256]
+
+  # IQ-Learn hyperparameters
+  method.alpha:
+    values: [0.5, 1.0]
+
+  agent.actor_lr:
+    values: [1e-4, 6e-5]
+
+  agent.critic_lr:
+    values: [1e-4, 3e-4]
+
+  agent.init_temp:
+    values: [0.1, 0.5, 1.0]
+
+  # Seeds for reproducibility
+  seed:
+    values: [0]

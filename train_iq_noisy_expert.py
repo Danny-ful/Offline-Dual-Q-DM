@@ -1,7 +1,9 @@
 """
-Copyright 2022 Div Garg. All rights reserved.
-
-Example training code for IQ-Learn which minimially modifies `train_rl.py`.
+Train IQ-Learn with noisy expert data.
+Expert data: 1 trajectory
+Supplement data: constructed similarly to ISWBC noisy expert setup
+- 10 trajectories with random actions
+- 10 trajectories with original expert actions
 """
 
 import datetime
@@ -40,48 +42,90 @@ def get_args(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
     return cfg
 
-class OfflineMemory(object):
-    def __init__(self, state_dim:int, action_dim: int) -> None:
+
+class NoisyExpertMemory(object):
+    """Memory buffer for noisy expert data constructed like ISWBC setup."""
+    def __init__(self, state_dim: int, action_dim: int) -> None:
         self.memory_size = -1
         self.states = None
         self.actions = None
         self.next_states = None
         self.rewards = None
         self.dones = None
-        # self.buffer = deque(maxlen=self.memory_size)
 
     def size(self):
         return self.memory_size
 
-    def load(self, path):
-        dataset = np.load(path, allow_pickle=True)
-        self.states = dataset['observations']
-        self.actions = dataset['actions']
-        self.next_states = dataset['next_observations']
-        self.rewards = dataset['rewards']
-        self.dones = dataset['terminals']
+    def load_noisy_expert(self, expert_path, num_expert_trajs, sample_freq, seed, action_dim):
+        """
+        Construct noisy expert dataset:
+        - Load expert trajectories
+        - Subsample: 10 trajs with random actions + 10 trajs with expert actions
+        - Ensures no overlap between the two groups
+        """
+        # Load 20 trajectories at once to ensure no overlap
+        dataset_all = ExpertDataset(expert_path, num_trajectories=20,
+                                    subsample_frequency=sample_freq, seed=seed)
+
+        total_len = len(dataset_all)
+        split_point = total_len // 2
+
+        # Collect data from first half (will have random actions)
+        states1, next_states1, actions1, rewards1, dones1 = [], [], [], [], []
+        for i in range(split_point):
+            state, next_state, action, reward, done = dataset_all[i]
+            states1.append(state)
+            next_states1.append(next_state)
+            actions1.append(action)
+            rewards1.append(reward)
+            dones1.append(done)
+
+        # Collect data from second half (will keep expert actions)
+        states2, next_states2, actions2, rewards2, dones2 = [], [], [], [], []
+        for i in range(split_point, total_len):
+            state, next_state, action, reward, done = dataset_all[i]
+            states2.append(state)
+            next_states2.append(next_state)
+            actions2.append(action)
+            rewards2.append(reward)
+            dones2.append(done)
+
+        # Convert to numpy arrays
+        states1 = np.array(states1)
+        actions1 = np.array(actions1)
+        next_states1 = np.array(next_states1)
+        rewards1 = np.array(rewards1)
+        dones1 = np.array(dones1)
+
+        states2 = np.array(states2)
+        actions2 = np.array(actions2)
+        next_states2 = np.array(next_states2)
+        rewards2 = np.array(rewards2)
+        dones2 = np.array(dones2)
+
+        # Replace actions in first group with random actions
+        random_actions = np.random.uniform(
+            -1.0, 1.0,
+            size=actions1.shape
+        ).astype(actions1.dtype)
+
+        # Concatenate to form final noisy dataset
+        self.states = np.concatenate([states1, states2])
+        self.next_states = np.concatenate([next_states1, next_states2])
+        self.actions = np.concatenate([random_actions, actions2])
+        self.rewards = np.concatenate([rewards1, rewards2])
+        self.dones = np.concatenate([dones1, dones2])
+
         self.memory_size = self.states.shape[0]
 
-    def load_from_pkl(self, path, num_trajs, sample_freq, seed):
-        data = ExpertDataset(path, num_trajs, sample_freq, seed)
-        states, next_states, actions, rewards, dones = [], [], [], [], []
-        for i in range(len(data)):
-            state, next_state, action, reward, done = data[i]
-            states.append(state)
-            next_states.append(next_state)
-            actions.append(action)
-            rewards.append(reward)
-            dones.append(done)
-        self.states = np.array(states)
-        self.next_states = np.array(next_states)
-        self.actions = np.array(actions)
-        self.rewards = np.array(rewards)
-        self.dones = np.array(dones)
-        self.memory_size = self.states.shape[0]
+        print(f"Noisy expert dataset constructed:")
+        print(f"  - Random action trajs: 10 ({states1.shape[0]} transitions)")
+        print(f"  - Expert action trajs: 10 ({states2.shape[0]} transitions)")
+        print(f"  - Total: {self.memory_size} transitions")
 
     def get_samples(self, batch_size, device):
         idx = np.random.choice(np.arange(self.memory_size), size=batch_size, replace=False)
-        
+
         batch_state = torch.as_tensor(self.states[idx], dtype=torch.float, device=device)
         batch_next_state = torch.as_tensor(self.next_states[idx], dtype=torch.float, device=device)
         batch_action = torch.as_tensor(self.actions[idx], dtype=torch.float, device=device)
@@ -95,7 +139,7 @@ class OfflineMemory(object):
 
 @hydra.main(config_path="conf", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    
+
     args = get_args(cfg)
 
     # set seeds
@@ -136,6 +180,46 @@ def main(cfg: DictConfig):
 
     agent = make_agent(env, args)
 
+    # Load dynamics ensemble for uncertainty penalty
+    if getattr(args.method, "uncertainty", False):
+        from agent.dynamics_ensemble import DynamicsEnsemble
+        ckpt_path = args.method.dynamics_ckpt
+        if not ckpt_path:
+            raise ValueError(
+                "method.uncertainty=True but method.dynamics_ckpt is empty. "
+                "Please first run train_dynamics.py to produce the checkpoint."
+            )
+        ckpt_abs = hydra.utils.to_absolute_path(ckpt_path)
+        ckpt_meta = torch.load(ckpt_abs, map_location="cpu")
+        ckpt_cfg = ckpt_meta.get("cfg", {}) if isinstance(ckpt_meta, dict) else {}
+        effective_obs_dim = ckpt_cfg.get("effective_obs_dim", None)
+
+        hidden_dim = ckpt_cfg.get("hidden_dim", None)
+        hidden_depth = ckpt_cfg.get("hidden_depth", None)
+
+        if hidden_dim is None or hidden_depth is None:
+            state_dict = ckpt_meta.get("state_dict", ckpt_meta)
+            if "members.0.trunk.0.weight" in state_dict:
+                hidden_dim = state_dict["members.0.trunk.0.weight"].shape[0]
+            linear_keys = [k for k in state_dict.keys() if "members.0.trunk" in k and ".weight" in k]
+            hidden_depth = len(linear_keys) - 1
+            print(f"--> Inferred dynamics architecture: hidden_dim={hidden_dim}, hidden_depth={hidden_depth}")
+
+        ens = DynamicsEnsemble(
+            obs_dim=env.observation_space.shape[0],
+            action_dim=env.action_space.shape[0],
+            N=int(args.method.penalty_N),
+            effective_obs_dim=effective_obs_dim,
+            hidden_dim=hidden_dim,
+            hidden_depth=hidden_depth,
+        ).to(args.device)
+        ens.load(ckpt_abs, map_location=args.device)
+        ens.eval()
+        for p in ens.parameters():
+            p.requires_grad_(False)
+        agent.dynamics_ensemble = ens
+        print(f"--> Loaded dynamics ensemble (N={args.method.penalty_N}) from {ckpt_abs}")
+
     if args.pretrain:
         pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
         if os.path.isfile(pretrain_path):
@@ -145,40 +229,41 @@ def main(cfg: DictConfig):
             print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
 
     # Load expert data
+    expert_path = hydra.utils.to_absolute_path(args.env.expert_path)
     expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed)
-    expert_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{args.env.demo}'),
+    expert_memory_replay.load(expert_path,
                               num_trajs=args.expert.demos,
                               sample_freq=args.expert.subsample_freq,
                               seed=args.seed + 42)
     print(f'--> Expert memory size: {expert_memory_replay.size()}')
 
-    # online_memory_replay = OfflineMemory(env.observation_space.shape[0], env.action_space.shape[0])
-    # filename = "/home/ubuntu/laiwenqi/projects/Offline\ Dual\ Q-DM/supplement/{}_iql_collected.npz".format(args.env.name)
-    # online_memory_replay.load(filename)
-    online_memory_replay = OfflineMemory(env.observation_space.shape[0], env.action_space.shape[0])
-    supplement_path = hydra.utils.to_absolute_path(f"supplement/{args.env.demo}")
-    online_memory_replay.load_from_pkl(
-        supplement_path,
-        num_trajs=args.expert.demos,
-        sample_freq=args.expert.subsample_freq,
-        seed=args.seed + 123,
-    )
+    # Load supplement data
+    supplement_path = hydra.utils.to_absolute_path(args.env.supplement_path)
+    if not os.path.isfile(supplement_path):
+        raise FileNotFoundError(
+            f"Supplement dataset not found at {supplement_path}."
+        )
+    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1)
+    online_memory_replay.load(supplement_path,
+                              num_trajs=np.iinfo(np.int32).max,
+                              sample_freq=args.expert.subsample_freq,
+                              seed=args.seed + 43)
     print(f"--> Supplement memory size: {online_memory_replay.size()}")
 
     # Setup logging
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join(args.log_dir, "offline")
-    
+    log_dir = os.path.join(args.log_dir, "noisy_expert")
+
     writer = SummaryWriter(log_dir=log_dir)
     print(f'--> Saving logs at: {log_dir}')
-    
+
     logger = Logger(log_dir,
                     log_frequency=args.log_interval,
                     writer=writer,
                     save_tb=True,
                     agent=args.agent.name)
 
-    
+
     for step in tqdm(range(LEARN_STEPS)):
         agent.iq_update = types.MethodType(iq_update, agent)
         agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
@@ -194,7 +279,7 @@ def main(cfg: DictConfig):
             returns = np.mean(eval_returns)
             logger.log('eval/episode_reward', returns, step)
             logger.dump(step, ty='eval')
-           
+
 
 
 
@@ -204,7 +289,7 @@ def iq_learn_update(self, policy_batch, expert_batch, logger, step):
     args = self.args
     policy_obs, policy_next_obs, policy_action, policy_reward, policy_done = policy_batch
     expert_obs, expert_next_obs, expert_action, expert_reward, expert_done = expert_batch
-    
+
 
     if args.only_expert_states:
         expert_batch = expert_obs, expert_next_obs, policy_action, expert_reward, expert_done
@@ -245,7 +330,7 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
     args = self.args
     policy_obs, policy_next_obs, policy_action, policy_reward, policy_done = policy_batch
     expert_obs, expert_next_obs, expert_action, expert_reward, expert_done = expert_batch
-    
+
 
     batch = get_concat_samples(policy_batch, expert_batch, args)
     obs, next_obs, action = batch[0:3]
@@ -258,16 +343,24 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
     else:
         next_V = self.getV(next_obs)
 
+    log_this_step = (step % 1000 == 0)
+
     if "DoubleQ" in self.args.q_net._target_:
         current_Q1, current_Q2 = self.critic(obs, action, both=True)
-        q1_loss, loss_dict1 = iq_loss(agent, current_Q1, current_V, next_V, batch)
-        q2_loss, loss_dict2 = iq_loss(agent, current_Q2, current_V, next_V, batch)
+        q1_loss, loss_dict1 = iq_loss(agent, current_Q1, current_V, next_V, batch, log_this_step=log_this_step)
+        q2_loss, loss_dict2 = iq_loss(agent, current_Q2, current_V, next_V, batch, log_this_step=log_this_step)
         critic_loss = 1/2 * (q1_loss + q2_loss)
         # merge loss dicts
         loss_dict = average_dicts(loss_dict1, loss_dict2)
+        if log_this_step:
+            loss_dict['Q_mean'] = 0.5 * (current_Q1.mean().item() + current_Q2.mean().item())
+            loss_dict['Q_max'] = max(current_Q1.max().item(), current_Q2.max().item())
     else:
         current_Q = self.critic(obs, action)
-        critic_loss, loss_dict = iq_loss(agent, current_Q, current_V, next_V, batch)
+        critic_loss, loss_dict = iq_loss(agent, current_Q, current_V, next_V, batch, log_this_step=log_this_step)
+        if log_this_step:
+            loss_dict['Q_mean'] = current_Q.mean().item()
+            loss_dict['Q_max'] = current_Q.max().item()
 
     logger.log('train/critic_loss', critic_loss, step)
 

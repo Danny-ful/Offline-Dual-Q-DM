@@ -58,11 +58,14 @@ class MetersGroup(object):
         self._csv_file_name = self._prepare_file(file_name, 'csv')
         self._formating = formating
         self._meters = defaultdict(AverageMeter)
-        self._csv_file = open(self._csv_file_name, 'w')
+        self._csv_file = open(self._csv_file_name, 'w+')
         self._csv_writer = None
+        self._csv_fieldnames = None
+        self._csv_rows = []
 
     def _prepare_file(self, prefix, suffix):
         file_name = f'{prefix}.{suffix}'
+        os.makedirs(os.path.dirname(file_name), exist_ok=True)
         if os.path.exists(file_name):
             os.remove(file_name)
         return file_name
@@ -171,7 +174,7 @@ class Logger(object):
         if self._sw is not None:
             self._sw.add_histogram(key, histogram, step)
 
-    def log(self, key, value, step, n=1, log_frequency=1):
+    def log(self, key, value, step, n=1, log_frequency=None):
         if not self._should_log(step, log_frequency):
             return
         assert key.startswith('train') or key.startswith('eval')

@@ -22,12 +22,13 @@ class eval_mode(object):
         return False
 
 
-def evaluate(actor, env, num_episodes=10, vis=True):
+def evaluate(actor, env, num_episodes=10, vis=True, stochastic=False):
     """Evaluates the policy.
     Args:
       actor: A policy to evaluate.
       env: Environment to evaluate the policy on.
       num_episodes: A number of episodes to average the policy on.
+      stochastic: If True, sample actions instead of using the mean.
     Returns:
       Averaged reward and a total number of steps.
     """
@@ -40,13 +41,16 @@ def evaluate(actor, env, num_episodes=10, vis=True):
 
         with eval_mode(actor):
             while not done:
-                action = actor.choose_action(state, sample=False)
+                action = actor.choose_action(state, sample=stochastic)
                 next_state, reward, done, info = env.step(action)
                 state = next_state
 
                 if 'episode' in info.keys():
                     total_returns.append(info['episode']['r'])
                     total_timesteps.append(info['episode']['l'])
+
+    print(f"Avg Return: {np.mean(total_returns):.2f}, "
+          f"Avg Episode Length: {np.mean(total_timesteps):.1f}")
 
     return total_returns, total_timesteps
 

@@ -77,7 +77,7 @@ trap cleanup EXIT
   method.loss=v0 \
   method.constrain=True \
   method.grad_pen=False \
-  method.penalty=False \
+  method.uncertainty=False \
   method.lambda_gp=1 \
   train.batch=256 \
   train.use_target=True \

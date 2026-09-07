@@ -12,6 +12,27 @@ import os
 # Register all custom envs
 envs.register_custom_envs()
 
+
+class ReduceObsWrapper(gym.ObservationWrapper):
+    """Reduce observation space to first n dimensions.
+
+    Used for Ant-v2 to remove the always-zero cfrc_ext dimensions (last 84 dims).
+    Only the first 27 dimensions (qpos + qvel) contain useful information.
+    """
+    def __init__(self, env, obs_dim):
+        super().__init__(env)
+        self.reduced_obs_dim = obs_dim
+        original_space = env.observation_space
+        self.observation_space = gym.spaces.Box(
+            low=original_space.low[:obs_dim],
+            high=original_space.high[:obs_dim],
+            dtype=original_space.dtype
+        )
+        print(f"[ReduceObsWrapper] Reduced observation space from {original_space.shape[0]} to {obs_dim} dims")
+
+    def observation(self, obs):
+        return obs[:self.reduced_obs_dim]
+
 def make_dcm(cfg):
     import dmc2gym
     """Helper function to create dm_control environment"""
@@ -78,7 +99,7 @@ def make_env(args, monitor=True):
         env = make_dcm(args)
     else:
         env = gym.make(args.env.name)
-    
+
     if monitor:
         env = Monitor(env, "gym")
 
@@ -87,4 +108,10 @@ def make_env(args, monitor=True):
 
     # Normalize box actions to [-1, 1]
     env = check_and_normalize_box_actions(env)
+
+    # Reduce observation dimension for Ant-v2 if requested
+    if args.env.name == 'Ant-v2' and args.env.get('reduce_obs_dim', False):
+        effective_dim = args.env.get('effective_obs_dim', 27)
+        env = ReduceObsWrapper(env, effective_dim)
+
     return env

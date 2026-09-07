@@ -27,12 +27,13 @@ expert:
   subsample_freq: 1
 
 eval:
-  policy: 
+  policy:
   threshold:
   use_baselines: False
   eps: 10
   transfer: False
   expert_env: ''
+  stochastic: False
 
 env:
   replay_mem: 50000
@@ -41,6 +42,8 @@ env:
   eps_window: 100
   learn_steps: 5e5
   eval_interval: 1e4
+  expert_path: ''       # e.g. experts/hopper_expert_v2.pkl
+  supplement_path: ''   # e.g. supplement/hopper_noisy_expert.pkl
 
   # use pixels
   from_pixels: False
@@ -62,6 +65,17 @@ actor_bc: False
 actor_bc_coef: 1.0
 # Number of actor updates per env step
 num_actor_updates: 1
+
+dyn:
+  N: 5
+  epochs: 150
+  batch_size: 256
+  lr: 1e-3
+  weight_decay: 1e-5
+  hidden_dim: 256
+  hidden_depth: 3
+  val_frac: 0.05
+  log_interval: 5
 
 defaults:
   - _self_

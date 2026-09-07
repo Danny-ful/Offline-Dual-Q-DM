@@ -53,8 +53,16 @@ cleanup() {
 trap cleanup EXIT
 
 
-echo "=== Stage 1: Training Dynamics Model ==="
+# echo "=== Stage 1: Training Dynamics Model (hopper full replay) ==="
 
 "$PYTHON_BIN" train_dynamics.py \
-    env=ant \
-    env.demo=ant_full_replay-v2.pkl
+    env.expert_path=experts/hopper.pkl \
+    env.supplement_path=supplement/hopper_noisy_expert.pkl \
+    env=hopper \
+    env.demo=hopper_noisy_expert.pkl 
+
+# echo "=== Stage 2: Training Dynamics Model (hopper expert_sac) ==="
+
+# "$PYTHON_BIN" train_dynamics.py \
+#     env=hopper \
+#     env.demo=cheeta-v2_expert_sac.pkl

@@ -53,23 +53,24 @@ def _collect_transitions(memory: Memory) -> Tuple[np.ndarray, np.ndarray, np.nda
 
 def _build_dataset(cfg: DictConfig, seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     REPLAY_MEMORY = int(cfg.env.replay_mem)
-    demo_filename = os.path.basename(cfg.env.demo)
+
+    expert_path = hydra.utils.to_absolute_path(cfg.env.expert_path)
+    supplement_path = hydra.utils.to_absolute_path(cfg.env.supplement_path)
+
+    if not os.path.isfile(expert_path):
+        raise FileNotFoundError(f"Expert dataset not found at {expert_path}")
+    if not os.path.isfile(supplement_path):
+        raise FileNotFoundError(f"Supplement dataset not found at {supplement_path}")
 
     expert_memory = Memory(REPLAY_MEMORY // 2, seed)
     expert_memory.load(
-        hydra.utils.to_absolute_path(f"experts/{demo_filename}"),
+        expert_path,
         num_trajs=cfg.expert.demos,
         sample_freq=cfg.expert.subsample_freq,
         seed=seed + 42,
     )
     print(f"--> Expert memory size: {expert_memory.size()}")
 
-    supplement_path = hydra.utils.to_absolute_path(f"supplement/{demo_filename}")
-    if not os.path.isfile(supplement_path):
-        raise FileNotFoundError(
-            f"Supplement dataset not found at {supplement_path}. "
-            "Train_dynamics expects the same offline data as train_iq in offline mode."
-        )
     supplement_memory = Memory(REPLAY_MEMORY // 2, seed + 1)
     supplement_memory.load(
         supplement_path,
@@ -89,7 +90,7 @@ def _build_dataset(cfg: DictConfig, seed: int) -> Tuple[np.ndarray, np.ndarray, 
     return obs, actions, next_obs
 
 
-@hydra.main(config_path="conf", config_name="config")
+@hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     cfg.device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print(OmegaConf.to_yaml(cfg))
@@ -103,6 +104,10 @@ def main(cfg: DictConfig) -> None:
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
+    # For Ant-v2: only the first 27 dims (qpos + qvel) carry information;
+    # the remaining 84 dims (cfrc_ext) are always zero in mujoco 2.1.
+    effective_obs_dim = int(cfg.get("dyn", {}).get("effective_obs_dim", obs_dim))
+
     dyn_cfg = cfg.get("dyn", {}) or {}
     N = int(getattr(cfg.method, "penalty_N", dyn_cfg.get("N", 5)))
     epochs = int(dyn_cfg.get("epochs", 100))
@@ -115,6 +120,9 @@ def main(cfg: DictConfig) -> None:
     log_interval = int(dyn_cfg.get("log_interval", 5))
 
     obs, actions, next_obs = _build_dataset(cfg, seed=cfg.seed)
+    # Slice to effective dims for dynamics training
+    obs = obs[:, :effective_obs_dim]
+    next_obs = next_obs[:, :effective_obs_dim]
     num_samples = obs.shape[0]
     obs_t = torch.as_tensor(obs, dtype=torch.float32, device=cfg.device)
     act_t = torch.as_tensor(actions, dtype=torch.float32, device=cfg.device)
@@ -135,6 +143,7 @@ def main(cfg: DictConfig) -> None:
         N=N,
         hidden_dim=hidden_dim,
         hidden_depth=hidden_depth,
+        effective_obs_dim=effective_obs_dim,
     ).to(cfg.device)
 
     # Optimize each member independently.
@@ -189,7 +198,8 @@ def main(cfg: DictConfig) -> None:
             )
 
     # Save checkpoint
-    save_dir = hydra.utils.to_absolute_path(f"dynamics/{cfg.env.name}")
+    demo_stem = os.path.splitext(os.path.basename(cfg.env.demo))[0]
+    save_dir = hydra.utils.to_absolute_path(f"dynamics/{demo_stem}")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"ensemble_{N}.pt")
     ensemble.save(save_path)

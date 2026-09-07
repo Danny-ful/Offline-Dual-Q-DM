@@ -8,14 +8,21 @@ from dataset.expert_dataset import ExpertDataset
 
 
 class Memory(object):
-    def __init__(self, memory_size: int, seed: int = 0) -> None:
+    def __init__(self, memory_size: int, seed: int = 0, reduce_obs_dim: int = None) -> None:
         random.seed(seed)
         self.memory_size = memory_size
         self.buffer = deque(maxlen=self.memory_size)
         self._array_cache = None
         self._gpu_cache = {}
+        self.reduce_obs_dim = reduce_obs_dim  # If set, slice observations to this dimension
 
     def add(self, experience) -> None:
+        # Optionally slice observations to reduce_obs_dim
+        if self.reduce_obs_dim is not None:
+            state, next_state, action, reward, done = experience
+            state = np.asarray(state)[:self.reduce_obs_dim]
+            next_state = np.asarray(next_state)[:self.reduce_obs_dim]
+            experience = (state, next_state, action, reward, done)
         self.buffer.append(experience)
         if self._array_cache is not None:
             self._array_cache = None

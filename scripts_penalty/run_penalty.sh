@@ -6,7 +6,7 @@ set -euo pipefail
 # Workflow:
 #   1) If the dynamics ensemble checkpoint is missing (or FORCE_RETRAIN_DYN=1),
 #      pretrain it with train_dynamics.py on expert + supplement data.
-#   2) Run train_iq.py with method.penalty=True using that checkpoint.
+#   2) Run train_iq.py with method.uncertainty=True using that checkpoint.
 #
 # Environment knobs (all optional):
 #   DYN_CKPT=dynamics/Hopper-v2/ensemble_5.pt   # where to save / look for ensemble
@@ -108,7 +108,7 @@ fi
   actor_expert_offline=False \
   schedular=False cuda_deterministic=True \
   env.learn_steps="$LEARN_STEPS" env.eval_interval="$EVAL_INTERVAL" eval.eps="$EVAL_EPS" \
-  method.penalty=True \
+  method.uncertainty=True \
   method.penalty_N="$PENALTY_N" method.penalty_M="$PENALTY_M" method.penalty_coef="$PENALTY_COEF" \
   method.dynamics_ckpt="$DYN_CKPT" \
   project_name=Offline-Dual-Q-DM exp_name="$EXP_NAME" seed="$SEED"

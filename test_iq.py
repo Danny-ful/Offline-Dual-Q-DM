@@ -43,7 +43,8 @@ def main(cfg: DictConfig):
     else:
         agent.load(hydra.utils.to_absolute_path(policy_file), f'_{name}_{args.env.name}')
 
-    eval_returns, eval_timesteps = evaluate(agent, env, num_episodes=args.eval.eps)
+    eval_returns, eval_timesteps = evaluate(agent, env, num_episodes=args.eval.eps,
+                                            stochastic=args.eval.stochastic)
     print(f'Avg. eval returns: {np.mean(eval_returns)}, timesteps: {np.mean(eval_timesteps)}')
     if args.eval_only:
         exit()

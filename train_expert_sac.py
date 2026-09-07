@@ -37,7 +37,7 @@ class NoOpLogger:
 
 
 # ENVS = ["HalfCheetah-v2", "Walker2d-v2", "Ant-v2"]
-ENVS = ["Hopper-v2"]
+ENVS = ["Ant-v2"]
 TOTAL_STEPS = int(1e6)
 INITIAL_MEMORY = 1280
 EPISODE_STEPS = 1000
@@ -176,20 +176,20 @@ def train_single_env(args, env_name):
     os.makedirs(SUPPLEMENT_DIR, exist_ok=True)
 
     # Save supplement_buffer as trajectory-dict pkl (compatible with ExpertDataset/Memory.load)
-    # buffer_tuples = list(replay_buffer.buffer)
-    # states, next_states, actions, rewards, dones = zip(*buffer_tuples)
-    # supplement_data = {
-    #     "states": [np.array(states)],
-    #     "next_states": [np.array(next_states)],
-    #     "actions": [np.array(actions)],
-    #     "rewards": [np.array(rewards)],
-    #     "dones": [np.array(dones)],
-    #     "lengths": [len(buffer_tuples)],
-    # }
-    # buffer_path = os.path.join(SUPPLEMENT_DIR, f"{env_name}_expert_sac.pkl")
-    # with open(buffer_path, 'wb') as f:
-    #     pickle.dump(supplement_data, f)
-    # print(f"[{env_name}] Saved supplement_buffer ({replay_buffer.size()} steps) -> {buffer_path}")
+    buffer_tuples = list(replay_buffer.buffer)
+    states, next_states, actions, rewards, dones = zip(*buffer_tuples)
+    supplement_data = {
+        "states": [np.array(states)],
+        "next_states": [np.array(next_states)],
+        "actions": [np.array(actions)],
+        "rewards": [np.array(rewards)],
+        "dones": [np.array(dones)],
+        "lengths": [len(buffer_tuples)],
+    }
+    buffer_path = os.path.join(SUPPLEMENT_DIR, f"{env_name}_expert_sac.pkl")
+    with open(buffer_path, 'wb') as f:
+        pickle.dump(supplement_data, f)
+    print(f"[{env_name}] Saved supplement_buffer ({replay_buffer.size()} steps) -> {buffer_path}")
 
     # Save model
     # model_path = os.path.join(SAVE_DIR, f"sac_{env_name}")
