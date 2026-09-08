@@ -26,9 +26,20 @@ command:
   - robosuite.eval_on_env=true
   - eval.stochastic=false
   - agent.learn_temp=false
+  - method.constrain=true
+  - method.synthetic_constrain=False
+  - method.synthetic_M=1
+  # Set a dynamics checkpoint matching the HDF5 observation layout before enabling synthetic.
+  - method.dynamics_ckpt=
   - ${args_no_hyphens}
 
 parameters:
+  method.synthetic_coef:
+    values: [0.1]
+
+  method.synthetic_warmup_steps:
+    values: [10000]
+
   # Training configuration. The baseline batch size is included.
   train.batch:
     values: [256]
