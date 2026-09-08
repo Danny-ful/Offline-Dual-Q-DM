@@ -9,7 +9,9 @@ import torch
 import torch.nn.functional as F
 
 # Full IQ-Learn objective with other divergences and options
-def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False):
+def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False,
+            *, penalty_u, constraint_penalty):
+    """Pure loss calculation; return loss, logs, and detached constraint mean."""
     args = agent.args
     gamma = agent.gamma
     obs, next_obs, action, env_reward, done, is_expert = batch
@@ -41,7 +43,9 @@ def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False):
         loss_dict['expert_reward'] = reward.mean().item()
         loss_dict['non_expert_reward'] = (current_Q - y)[~is_expert].mean().item()
 
-    penalty_u = _compute_dynamics_penalty(agent, batch) if args.method.uncertainty else None
+    constraint_mean = None
+    if penalty_u is not None:
+        penalty_u = penalty_u.detach()
     if log_this_step:
         # loss_dict['penalty'] = penalty_u.mean().item() if penalty_u is not None else 0.0
         if penalty_u is not None:
@@ -204,31 +208,7 @@ def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False):
            
         constraint_mean = constrain_loss.mean()
 
-        penalty_auto = bool(getattr(args.method, "penalty_auto", False))
-        target_constraint = float(getattr(args.method, "penalty_target", 0.0))
-        penalty_lr = float(getattr(args.method, "penalty_lr", 0.01))
-        penalty_min = float(getattr(args.method, "penalty_min", 0.0))
-        penalty_max = float(getattr(args.method, "penalty_max", 1e6))
-
-        if penalty_auto:
-            if not hasattr(agent, "log_penalty"):
-                init_penalty = float(args.penalty)
-                log_penalty = torch.tensor(math.log(max(init_penalty, 1e-8)), device=constraint_mean.device)
-                log_penalty.requires_grad_(True)
-                agent.log_penalty = log_penalty
-                agent.penalty_optimizer = torch.optim.Adam([agent.log_penalty], lr=penalty_lr)
-
-            penalty_loss = -(agent.log_penalty * (constraint_mean - target_constraint).detach())
-            agent.penalty_optimizer.zero_grad()
-            penalty_loss.backward()
-            agent.penalty_optimizer.step()
-
-            with torch.no_grad():
-                penalty = agent.log_penalty.exp().clamp(penalty_min, penalty_max)
-                agent.log_penalty.copy_(torch.log(penalty.clamp_min(1e-8)))
-                args.penalty = float(penalty.item())
-        else:
-            penalty = torch.tensor(float(args.penalty), device=constraint_mean.device)
+        penalty = constraint_penalty.detach()
 
         loss += (penalty * constrain_loss).mean()
         # loss += (penalty * constrain_loss)[expert_mask].mean()
@@ -302,19 +282,21 @@ def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False):
 
     if log_this_step:
         loss_dict['total_loss'] = loss.item()
-    return loss, loss_dict
+    return loss, loss_dict, constraint_mean.detach() if constraint_mean is not None else None
 
 
-def _compute_dynamics_penalty(agent, batch):
-    """Compute the uncertainty penalty U(s,a) = γ · Std_i(E_M[min_k Q_ψ_k^-(s',a')]).
+def _compute_dynamics_penalty(agent, batch, *, shared_noise=True):
+    """Compute c γ (1-done) Std_i(E_M[min_k Q_ψ_k^-(s',a')]).
+
+    Set shared_noise=False only to diagnose the former independent sampler.
 
     Runs entirely under ``torch.no_grad`` so gradients do not flow through the
-    dynamics ensemble, target critic or current actor sampling. Returns a 1D
-    tensor aligned with ``(current_Q - y)``.
+    dynamics ensemble, target critic or current actor sampling. Returns a
+    tensor of shape [B, 1] aligned with ``(current_Q - y)``.
 
     """
     args = agent.args
-    obs, _next_obs, action, _r, _done, is_expert = batch
+    obs, _next_obs, action, _r, done, is_expert = batch
 
     if not hasattr(agent, "dynamics_ensemble"):
         raise RuntimeError(
@@ -326,14 +308,27 @@ def _compute_dynamics_penalty(agent, batch):
         return torch.zeros_like(obs[:, :1])
 
     ens = agent.dynamics_ensemble
-    N = int(args.method.penalty_N)
     M = int(args.method.penalty_M)
     B = obs.size(0)
+    if M < 1:
+        raise ValueError("penalty_M must be at least 1")
 
     with torch.no_grad():
-        next_states = ens.sample_next_ensemble(obs, action, M=M)  # [B, N, M, obs_dim]
+        # Pair samples across members, independently across batch/sample indices.
+        dynamics_noise = None
+        if shared_noise:
+            dynamics_noise = torch.randn(B, M, ens.effective_obs_dim,
+                                         device=obs.device, dtype=obs.dtype)
+        next_states = ens.sample_next_ensemble(obs, action, M=M, noise=dynamics_noise)
+        N = next_states.size(1)
+        if N < 1 or N != int(args.method.penalty_N):
+            raise ValueError("Sampled ensemble size must match penalty_N and be positive")
         flat_s = next_states.reshape(B * N * M, -1)
-        flat_a, _, _ = agent.actor.sample(flat_s)
+        flat_noise = None
+        if shared_noise:
+            actor_noise = torch.randn(B, M, action.size(-1), device=obs.device, dtype=obs.dtype)
+            flat_noise = actor_noise.unsqueeze(1).expand(B, N, M, -1).reshape(B * N * M, -1)
+        flat_a, _, _ = agent.actor.sample(flat_s, noise=flat_noise)
 
         critic_target = getattr(agent, "critic_target", None)
         if critic_target is None:
@@ -349,7 +344,42 @@ def _compute_dynamics_penalty(agent, batch):
         per_member = q_min.mean(dim=2)  # E_M over samples: [B, N]
         # unbiased=False avoids NaN when N == 1.
         u = per_member.std(dim=1, unbiased=False, keepdim=True)  # [B, 1]
-        u = args.gamma * u
+        u = agent.gamma * (1 - done.to(u).reshape(B, 1)) * u
 
     penalty_full = float(args.method.penalty_coef) * u  # [B, 1]
     return penalty_full
+
+
+def prepare_iq_step(agent, batch):
+    """Compute one detached Gamma and snapshot the constraint weight for this step."""
+    penalty_u = (_compute_dynamics_penalty(agent, batch)
+                 if agent.args.method.uncertainty else None)
+    penalty = batch[0].new_tensor(float(agent.args.penalty))
+    return penalty_u, penalty
+
+
+def update_iq_penalty(agent, constraint_means):
+    """Update the dual weight once, after the critic, using all heads equally."""
+    method = agent.args.method
+    if not method.constrain or not bool(getattr(method, "penalty_auto", False)):
+        return
+    values = [value.detach() for value in constraint_means if value is not None]
+    if not values:
+        raise ValueError("Automatic penalty update requires constraint statistics")
+    constraint_mean = torch.stack(values).mean()
+    if not hasattr(agent, "log_penalty"):
+        agent.log_penalty = constraint_mean.new_tensor(
+            math.log(max(float(agent.args.penalty), 1e-8)), requires_grad=True)
+        agent.penalty_optimizer = torch.optim.Adam(
+            [agent.log_penalty], lr=float(getattr(method, "penalty_lr", 0.01)))
+    target = float(getattr(method, "penalty_target", 0.0))
+    penalty_loss = -agent.log_penalty * (constraint_mean - target)
+    agent.penalty_optimizer.zero_grad()
+    penalty_loss.backward()
+    agent.penalty_optimizer.step()
+    with torch.no_grad():
+        penalty = agent.log_penalty.exp().clamp(
+            float(getattr(method, "penalty_min", 0.0)),
+            float(getattr(method, "penalty_max", 1e6)))
+        agent.log_penalty.copy_(penalty.clamp_min(1e-8).log())
+        agent.args.penalty = float(penalty.item())

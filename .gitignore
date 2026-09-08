@@ -24,4 +24,3 @@ wandb/
 *.log
 supplement/
 experts/
-*.hdf5

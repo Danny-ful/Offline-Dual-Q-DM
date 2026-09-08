@@ -27,7 +27,7 @@ from dataset.memory import Memory
 from agent import make_agent
 from utils.utils import eval_mode, average_dicts, get_concat_samples, soft_update, hard_update
 from utils.logger import Logger
-from iq import iq_loss
+from iq import iq_loss, prepare_iq_step, update_iq_penalty
 from tqdm import tqdm
 
 torch.set_num_threads(2)
@@ -378,15 +378,30 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
     else:
         next_V = self.getV(next_obs)
 
+    penalty_u, constraint_penalty = prepare_iq_step(agent, batch)
+    constraint_means = []
+
     if "DoubleQ" in self.args.q_net._target_:
         current_Q1, current_Q2 = self.critic(obs, action, both=True)
-        q1_loss, loss_dict1 = iq_loss(agent, current_Q1, current_V, next_V, batch)
-        q2_loss, loss_dict2 = iq_loss(agent, current_Q2, current_V, next_V, batch)
+        q1_loss, loss_dict1, constraint_mean = iq_loss(
+            agent, current_Q1, current_V, next_V, batch,
+            penalty_u=penalty_u,
+            constraint_penalty=constraint_penalty)
+        constraint_means.append(constraint_mean)
+        q2_loss, loss_dict2, constraint_mean = iq_loss(
+            agent, current_Q2, current_V, next_V, batch,
+            penalty_u=penalty_u,
+            constraint_penalty=constraint_penalty)
+        constraint_means.append(constraint_mean)
         critic_loss = 1/2 * (q1_loss + q2_loss)
         loss_dict = average_dicts(loss_dict1, loss_dict2)
     else:
         current_Q = self.critic(obs, action)
-        critic_loss, loss_dict = iq_loss(agent, current_Q, current_V, next_V, batch)
+        critic_loss, loss_dict, constraint_mean = iq_loss(
+            agent, current_Q, current_V, next_V, batch,
+            penalty_u=penalty_u,
+            constraint_penalty=constraint_penalty)
+        constraint_means.append(constraint_mean)
 
     logger.log('train/critic_loss', critic_loss, step)
 
@@ -395,6 +410,7 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
     # Gradient clipping to prevent exploding gradients
     torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
     self.critic_optimizer.step()
+    update_iq_penalty(agent, constraint_means)
     return loss_dict
 
 

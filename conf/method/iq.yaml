@@ -20,14 +20,15 @@ method:
   lambda_gp: 10
   mix_coeff: 1
 
-  # Dynamics-uncertainty penalty U(s,a) = γ·Std_i(E_M[min_k Q_ψ_k^-(s',a')])
+  # Dynamics penalty: penalty_coef * gamma * (1-done) * Std_i(E_M[min_k Q_k^-])
+  # Dynamics and actor base noises are shared across ensemble members.
   uncertainty: False
-  penalty_auto: False
+  penalty_auto: False  # updated once per critic step, using mean head violation
   penalty_target: 0.0
   penalty_lr: 0.01
   penalty_min: 0.0
   penalty_max: 1e4
   penalty_coef: 0.1
   penalty_N: 5        # ensemble size (must match train_dynamics.py)
-  penalty_M: 10       # samples per ensemble member
+  penalty_M: 10       # samples per ensemble member; validate with fixed-batch M diagnostics
   dynamics_ckpt: ''   # e.g. dynamics/hopper/ensemble_5.pt

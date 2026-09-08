@@ -1,5 +1,5 @@
 program: train_iq_noisy_expert.py
-name: noisy-expert-iq-sweep-ant
+name: noisy-expert-iq-sweep-hopper
 method: grid
 
 metric:
@@ -10,11 +10,11 @@ command:
   - ${env}
   - python
   - ${program}
-  - env=ant
+  - env=hopper
   - agent=sac
   - offline=True
-  - env.expert_path=experts/ant.pkl
-  - env.supplement_path=supplement/ant_noisy_expert.pkl
+  - env.expert_path=experts/hopper.pkl
+  - env.supplement_path=supplement/hopper_noisy_expert.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -32,12 +32,12 @@ command:
   - cuda_deterministic=False
   - method.regularize=False
   - actor_expert_offline=True
-  - project_name=Offline-Dual-Q-DM-Noisy-Expert-ant
-  - exp_name=noisy_expert_ant
-  - method.uncertainty=False
-  - method.penalty_auto=False
+  - project_name=Offline-Dual-Q-DM-Noisy-Expert-hopper
+  - exp_name=noisy_expert_hopper
+  - method.uncertainty=True
+  - method.penalty_auto=True
   - method.penalty_N=5
-  - method.dynamics_ckpt=dynamics/ant_noisy_expert/ensemble_5.pt
+  - method.dynamics_ckpt=dynamics/hopper_noisy_expert/ensemble_5.pt
   - ${args_no_hyphens}
   - q_net._target_=agent.sac_models.DoubleQCritic
   - env.learn_steps=5e5

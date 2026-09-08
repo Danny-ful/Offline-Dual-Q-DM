@@ -123,6 +123,51 @@ Optional variables:
 - `NUM_AGENTS` (default: `1`)
 - `SWEEP_CONFIG` (default: `scripts/wandb_sweep_hopper_bayes.yaml`)
 
+## Uncertainty penalty and diagnostics
+
+With `method.uncertainty=True`, each critic step computes one detached penalty:
+`penalty_coef * gamma * (1 - done) * std(member_mean_target_Q)`.
+Dynamics and actor standard normal noises are shared across ensemble members,
+independent across batch rows and Monte Carlo samples, and regenerated each step.
+Both Q heads use the same penalty and constraint weight. With `penalty_auto=True`,
+the mean violation across heads updates the constraint weight once after the critic
+update; that weight is used on the next step. This also applies with uncertainty
+disabled. The logged `penalty_alpha` is the weight used for the current loss.
+
+The mask uses the stored batch `done`, just like bootstrapping. Timeouts intended
+to bootstrap must already have `done=0`; the penalty cannot recover termination
+semantics lost during data export. Shared noise removes spurious disagreement for
+identical models, but finite-M error can remain for different models. The default
+`penalty_M` remains 10.
+
+To compare independent versus shared sampling on a loaded, frozen checkpoint and
+one fixed concatenated batch `(obs, next_obs, action, reward, done, is_expert)`:
+
+```python
+from utils.uncertainty_diagnostics import diagnose_uncertainty
+
+report = diagnose_uncertainty(
+    agent, batch, sample_counts=(10, 50, 100, 500), repeats=50, seed=0)
+```
+
+This CPU/CUDA diagnostic restores RNG state, module training flags and `penalty_M`.
+It reports per-state variation across repeats, averaged by expert/non-expert and
+terminal/continuing groups. The repeated largest-M shared estimate is a numerical
+reference, not exact ground truth. Independent sampling here retains the terminal
+mask so the comparison isolates sampling. Mean-state/mean-action evaluation would
+change the expectation being estimated and is not used as its replacement.
+
+For custom training code, `prepare_iq_step(agent, batch)` returns `penalty_u` and
+`constraint_penalty`. Pass both as keyword arguments to each `iq_loss` call, which
+now returns `(loss, logs, detached_constraint_mean)`. After the critic optimizer
+step, call `update_iq_penalty(agent, constraint_means)` once for all heads.
+
+Run CPU regression tests (PyTorch, torchvision and NumPy required):
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## Contributions
 
 Contributions are very welcome. If you know how to make this code better, please open an issue. If you want to submit a pull request, please open an issue first. 
