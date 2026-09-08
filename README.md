@@ -168,6 +168,86 @@ Run CPU regression tests (PyTorch, torchvision and NumPy required):
 python -m unittest discover -s tests -v
 ```
 
+## One-step synthetic Bellman constraint
+
+Enable `method.synthetic_constrain=True` with `method.constrain=True` to add an
+auxiliary critic loss in `train_iq.py`, `train_iq_noisy_expert.py`, or
+`train_iq_offline.py`, or `train_iq_robosuite.py`. The default is disabled.
+For example, add these overrides to an existing offline IQ training command
+with its dataset paths:
+
+```bash
+method.constrain=True method.synthetic_constrain=True method.synthetic_M=1 \
+method.synthetic_coef=0.1 method.synthetic_warmup_steps=10000 \
+method.dynamics_ckpt=/absolute/path/to/ensemble_5.pt
+```
+
+The model checkpoint must use the same observation layout and action scaling as
+the training dataset. `penalty_N` must match the checkpoint. `synthetic_M`
+(default 1) controls next-state samples per member for the auxiliary branch;
+`penalty_M` (default 10) independently controls real-batch uncertainty sampling.
+The model loads even when `uncertainty=False`.
+
+Each critic step takes the concatenated real batch's states, samples one current
+actor action per state, and generates one-step next states with the frozen
+dynamics ensemble. Samples are discarded after this update; there is no
+persistent synthetic buffer or multistep rollout. Actor batches and the original
+expert/value/chi-square losses are unchanged.
+
+For each online Q head, the auxiliary implicit reward is
+`Q(s, actor_action) - gamma * mean((1-model_done) * target_soft_V) + Gamma`.
+`target_soft_V` uses the minimum target Q head minus `alpha * log_pi`; target
+clipping follows `cliptarget`. Values are averaged over members and samples
+before applying the existing divergence-dependent Bellman constraint. Both
+online heads use the same actions, targets and uncertainty, and their losses
+are averaged. Actor, dynamics, target critic and entropy temperature receive no
+gradients from this loss.
+
+The auxiliary uncertainty is
+`u = gamma * std_i(mean_M((1-model_done) * min_target_Q))`, evaluated at the new
+actor action. Model and next-action base noises are shared across members.
+If `uncertainty=True`, `Gamma = penalty_coef * u`; otherwise `Gamma=0`.
+Uncertainty only affects the additive `Gamma` term; samples have equal weight.
+When disabled, uncertainty is still logged for diagnostics but does not affect
+the auxiliary loss. The added loss is
+`synthetic_coef * warmup_fraction * mean(violation)`;
+the fraction ramps from zero to one over `synthetic_warmup_steps` critic steps
+(zero disables the ramp). It does not multiply the original `penalty` weight,
+and `penalty_auto` continues to use only real-batch violations.
+
+Termination is recomputed from each predicted next observation for `Ant-v2`,
+`Hopper-v2`, `Walker2d-v2`, and `HalfCheetah-v2`; stored batch `done` is never
+reused for a new action. Time limits bootstrap. Hopper's velocity clipping means
+its full simulator-state termination test can only be approximated from these
+observations.
+
+The Robosuite entry point uses success-as-terminal rules for standard single-arm
+Robosuite 1.5 `Lift` and `PickPlaceCan` low-dimensional observations. Observation
+offsets follow the HDF5 shapes and selected key order. Lift checks cube height
+above 0.84 m. Can checks the world position in its target bin quadrant and the
+end-effector release distance, using `bin2_pos` and `table_full_size` from dataset
+metadata when provided. These rules follow Robosuite v1.5.2's
+[Lift](https://github.com/ARISE-Initiative/robosuite/blob/v1.5.2/robosuite/environments/manipulation/lift.py)
+and [PickPlace](https://github.com/ARISE-Initiative/robosuite/blob/v1.5.2/robosuite/environments/manipulation/pick_place.py)
+implementations. They require unnormalized observations and the standard object
+layout (Lift: 10 dimensions; Can: 14 dimensions plus `robot0_eef_pos`). No training
+simulator or learned termination model is created. Failed-demo end boundaries
+and time limits cannot be recovered from a predicted next observation, so the
+synthetic branch only masks success; the original real-data done masks remain
+unchanged. Unsupported tasks/layouts fail rather than silently assuming done=0.
+
+For Robosuite, supply a dynamics checkpoint trained with exactly the same
+flattened observation order and action scaling. `load_iq_dynamics` loads and
+freezes that checkpoint; it does not train or convert a dynamics model. Synthetic
+metrics are also sent to the Robosuite logger under `train/synthetic/`.
+
+Logs include `synthetic/constrain_loss`, `violation`, `coef`, `uncertainty`,
+`q`, and `terminal_fraction` (all under the `synthetic/` prefix).
+Before relying on the auxiliary loss, validate the checkpoint on held-out real
+transitions and compare real evaluation returns against the disabled baseline.
+CPU tests verify targets, gradients, termination, loading, and dual-update
+isolation; they do not establish policy improvement.
+
 ## Contributions
 
 Contributions are very welcome. If you know how to make this code better, please open an issue. If you want to submit a pull request, please open an issue first. 
@@ -177,5 +257,3 @@ Contributions are very welcome. If you know how to make this code better, please
 The code is made available for academic, non-commercial usage. Please see the [LICENSE](LICENSE.md) for the licensing terms of IQ-Learn for commercial use and running it on your robots/creating new AI agents.
 
 For any inquiry, contact: Div Garg ([divgarg@stanford.edu](mailto:divgarg@stanford.edu?subject=[GitHub]%IQ-Learn))
-
-

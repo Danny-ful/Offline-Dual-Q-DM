@@ -27,7 +27,7 @@ from agent import make_agent
 from agent.bc import bc_update
 from utils.utils import eval_mode, average_dicts, get_concat_samples, evaluate, soft_update, hard_update
 from utils.logger import Logger
-from iq import iq_loss, prepare_iq_step, update_iq_penalty
+from iq import iq_loss, prepare_iq_step, update_iq_penalty, synthetic_iq_loss
 from recoil import recoil_update
 
 torch.set_num_threads(2)
@@ -78,46 +78,10 @@ def main(cfg: DictConfig):
 
     agent = make_agent(env, args)
 
-    if getattr(args.method, "uncertainty", False):
-        from agent.dynamics_ensemble import DynamicsEnsemble
-        ckpt_path = args.method.dynamics_ckpt
-        if not ckpt_path:
-            raise ValueError(
-                "method.uncertainty=True but method.dynamics_ckpt is empty. "
-                "Please first run train_dynamics.py to produce the checkpoint."
-            )
-        ckpt_abs = hydra.utils.to_absolute_path(ckpt_path)
-        ckpt_meta = torch.load(ckpt_abs, map_location="cpu")
-        ckpt_cfg = ckpt_meta.get("cfg", {}) if isinstance(ckpt_meta, dict) else {}
-        effective_obs_dim = ckpt_cfg.get("effective_obs_dim", None)
-
-        # Infer hidden_dim and hidden_depth from checkpoint if not in config
-        hidden_dim = ckpt_cfg.get("hidden_dim", None)
-        hidden_depth = ckpt_cfg.get("hidden_depth", None)
-
-        if hidden_dim is None or hidden_depth is None:
-            # Infer from state_dict structure
-            state_dict = ckpt_meta.get("state_dict", ckpt_meta)
-            if "members.0.trunk.0.weight" in state_dict:
-                hidden_dim = state_dict["members.0.trunk.0.weight"].shape[0]
-            linear_keys = [k for k in state_dict.keys() if "members.0.trunk" in k and ".weight" in k]
-            hidden_depth = len(linear_keys) - 1
-            print(f"--> Inferred dynamics architecture: hidden_dim={hidden_dim}, hidden_depth={hidden_depth}")
-
-        ens = DynamicsEnsemble(
-            obs_dim=env.observation_space.shape[0],
-            action_dim=env.action_space.shape[0],
-            N=int(args.method.penalty_N),
-            effective_obs_dim=effective_obs_dim,
-            hidden_dim=hidden_dim,
-            hidden_depth=hidden_depth,
-        ).to(args.device)
-        ens.load(ckpt_abs, map_location=args.device)
-        ens.eval()
-        for p in ens.parameters():
-            p.requires_grad_(False)
-        agent.dynamics_ensemble = ens
-        print(f"--> Loaded dynamics ensemble (N={args.method.penalty_N}) from {ckpt_abs}")
+    if (getattr(args.method, "uncertainty", False)
+            or getattr(args.method, "synthetic_constrain", False)):
+        from agent.dynamics_ensemble import load_iq_dynamics
+        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
 
     if args.pretrain:
         pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
@@ -495,6 +459,13 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
         logger.log("train/q_supplement_state_dataset_minus_actor", q_policy_gap, step)
         logger.log("train/actor_action_mse_to_expert_on_expert_obs", expert_actor_action_mse, step)
         logger.log("train/actor_action_mse_to_dataset_on_supplement_obs", sup_dataset_mse, step)
+
+    synthetic_loss, synthetic_logs = synthetic_iq_loss(
+        agent, obs, step, log_this_step=step % args.log_interval == 0)
+    critic_loss = critic_loss + synthetic_loss
+    loss_dict.update(synthetic_logs)
+    if 'total_loss' in loss_dict:
+        loss_dict['total_loss'] = critic_loss.item()
 
     if log_this_step:
         logger.log('train/critic_loss', critic_loss, step)

@@ -118,6 +118,12 @@ method:
   penalty_M: 10
   dynamics_ckpt: ""
 
+  # One-step synthetic Bellman constraint on current actor actions.
+  synthetic_constrain: false
+  synthetic_M: 1  # next-state samples per member, independent of penalty_M
+  synthetic_coef: 0.1
+  synthetic_warmup_steps: 10000
+
 # Agent training
 num_actor_updates: 1
 

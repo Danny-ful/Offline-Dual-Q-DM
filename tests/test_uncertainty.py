@@ -179,6 +179,7 @@ class UncertaintyTests(unittest.TestCase):
                         namespace = dict(torch=torch, iq_loss=loss_spy,
                                          prepare_iq_step=iq.prepare_iq_step,
                                          update_iq_penalty=iq.update_iq_penalty,
+                                         synthetic_iq_loss=iq.synthetic_iq_loss,
                                          get_concat_samples=get_concat_samples,
                                          average_dicts=average_dicts)
                         exec(compile(ast.Module(body=[function], type_ignores=[]), filename, 'exec'), namespace)

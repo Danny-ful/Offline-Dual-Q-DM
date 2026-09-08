@@ -32,3 +32,10 @@ method:
   penalty_N: 5        # ensemble size (must match train_dynamics.py)
   penalty_M: 10       # samples per ensemble member; validate with fixed-batch M diagnostics
   dynamics_ckpt: ''   # e.g. dynamics/hopper/ensemble_5.pt
+
+  # Fresh one-step model transitions from batch states and current actor actions.
+  # Independent of penalty / penalty_auto; no persistent synthetic replay buffer.
+  synthetic_constrain: False
+  synthetic_M: 1  # next-state samples per member, independent of penalty_M
+  synthetic_coef: 0.1
+  synthetic_warmup_steps: 10000
