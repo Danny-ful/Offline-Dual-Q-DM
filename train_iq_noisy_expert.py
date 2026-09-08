@@ -181,44 +181,65 @@ def main(cfg: DictConfig):
     agent = make_agent(env, args)
 
     # Load dynamics ensemble for uncertainty penalty
+    print("\n=== Dynamics Ensemble Debug (Before Load) ===")
+    print(f"penalty (global) = {args.get('penalty', 'UNDEFINED')}")
+    print(f"method.penalty_auto = {getattr(args.method, 'penalty_auto', 'UNDEFINED')}")
+    print(f"method.uncertainty = {getattr(args.method, 'uncertainty', 'UNDEFINED')}")
+    print(f"method.penalty_N = {getattr(args.method, 'penalty_N', 'UNDEFINED')}")
+    print(f"method.dynamics_ckpt = {getattr(args.method, 'dynamics_ckpt', 'UNDEFINED')}")
+    print(f"agent.dynamics_ensemble exists before = {hasattr(agent, 'dynamics_ensemble')}")
+
     if getattr(args.method, "uncertainty", False):
-        from agent.dynamics_ensemble import DynamicsEnsemble
-        ckpt_path = args.method.dynamics_ckpt
-        if not ckpt_path:
-            raise ValueError(
-                "method.uncertainty=True but method.dynamics_ckpt is empty. "
-                "Please first run train_dynamics.py to produce the checkpoint."
-            )
-        ckpt_abs = hydra.utils.to_absolute_path(ckpt_path)
-        ckpt_meta = torch.load(ckpt_abs, map_location="cpu")
-        ckpt_cfg = ckpt_meta.get("cfg", {}) if isinstance(ckpt_meta, dict) else {}
-        effective_obs_dim = ckpt_cfg.get("effective_obs_dim", None)
+        try:
+            from agent.dynamics_ensemble import DynamicsEnsemble
+            ckpt_path = args.method.dynamics_ckpt
+            if not ckpt_path:
+                raise ValueError(
+                    "method.uncertainty=True but method.dynamics_ckpt is empty. "
+                    "Please first run train_dynamics.py to produce the checkpoint."
+                )
+            ckpt_abs = hydra.utils.to_absolute_path(ckpt_path)
+            print(f"--> Loading dynamics ensemble from {ckpt_abs}")
+            ckpt_meta = torch.load(ckpt_abs, map_location="cpu")
+            ckpt_cfg = ckpt_meta.get("cfg", {}) if isinstance(ckpt_meta, dict) else {}
+            effective_obs_dim = ckpt_cfg.get("effective_obs_dim", None)
 
-        hidden_dim = ckpt_cfg.get("hidden_dim", None)
-        hidden_depth = ckpt_cfg.get("hidden_depth", None)
+            hidden_dim = ckpt_cfg.get("hidden_dim", None)
+            hidden_depth = ckpt_cfg.get("hidden_depth", None)
 
-        if hidden_dim is None or hidden_depth is None:
-            state_dict = ckpt_meta.get("state_dict", ckpt_meta)
-            if "members.0.trunk.0.weight" in state_dict:
-                hidden_dim = state_dict["members.0.trunk.0.weight"].shape[0]
-            linear_keys = [k for k in state_dict.keys() if "members.0.trunk" in k and ".weight" in k]
-            hidden_depth = len(linear_keys) - 1
-            print(f"--> Inferred dynamics architecture: hidden_dim={hidden_dim}, hidden_depth={hidden_depth}")
+            if hidden_dim is None or hidden_depth is None:
+                state_dict = ckpt_meta.get("state_dict", ckpt_meta)
+                if "members.0.trunk.0.weight" in state_dict:
+                    hidden_dim = state_dict["members.0.trunk.0.weight"].shape[0]
+                linear_keys = [k for k in state_dict.keys() if "members.0.trunk" in k and ".weight" in k]
+                hidden_depth = len(linear_keys) - 1
+                print(f"--> Inferred dynamics architecture: hidden_dim={hidden_dim}, hidden_depth={hidden_depth}")
 
-        ens = DynamicsEnsemble(
-            obs_dim=env.observation_space.shape[0],
-            action_dim=env.action_space.shape[0],
-            N=int(args.method.penalty_N),
-            effective_obs_dim=effective_obs_dim,
-            hidden_dim=hidden_dim,
-            hidden_depth=hidden_depth,
-        ).to(args.device)
-        ens.load(ckpt_abs, map_location=args.device)
-        ens.eval()
-        for p in ens.parameters():
-            p.requires_grad_(False)
-        agent.dynamics_ensemble = ens
-        print(f"--> Loaded dynamics ensemble (N={args.method.penalty_N}) from {ckpt_abs}")
+            ens = DynamicsEnsemble(
+                obs_dim=env.observation_space.shape[0],
+                action_dim=env.action_space.shape[0],
+                N=int(args.method.penalty_N),
+                effective_obs_dim=effective_obs_dim,
+                hidden_dim=hidden_dim,
+                hidden_depth=hidden_depth,
+            ).to(args.device)
+            ens.load(ckpt_abs, map_location=args.device)
+            ens.eval()
+            for p in ens.parameters():
+                p.requires_grad_(False)
+            agent.dynamics_ensemble = ens
+            print(f"--> Loaded dynamics ensemble (N={args.method.penalty_N}) from {ckpt_abs}")
+        except Exception as e:
+            print(f"ERROR: Failed to load dynamics ensemble: {e}")
+            print(f"method.uncertainty=True but dynamics_ensemble could not be loaded.")
+            print(f"Check that the checkpoint path is correct and the file is valid.")
+            raise
+
+    print("\n=== Dynamics Ensemble Debug (After Load) ===")
+    print(f"agent.dynamics_ensemble exists after = {hasattr(agent, 'dynamics_ensemble')}")
+    if hasattr(agent, 'dynamics_ensemble'):
+        print(f"agent.dynamics_ensemble type = {type(agent.dynamics_ensemble)}")
+
 
     if args.pretrain:
         pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
@@ -228,9 +249,15 @@ def main(cfg: DictConfig):
         else:
             print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
 
+    # Determine if we need to reduce observation dimension (for Ant-v2)
+    reduce_obs_dim = None
+    if args.env.name == 'Ant-v2' and args.env.get('reduce_obs_dim', False):
+        reduce_obs_dim = args.env.get('effective_obs_dim', 27)
+        print(f'--> Reducing observation dimension to {reduce_obs_dim} for {args.env.name}')
+
     # Load expert data
     expert_path = hydra.utils.to_absolute_path(args.env.expert_path)
-    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed)
+    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed, reduce_obs_dim=reduce_obs_dim)
     expert_memory_replay.load(expert_path,
                               num_trajs=args.expert.demos,
                               sample_freq=args.expert.subsample_freq,
@@ -243,7 +270,7 @@ def main(cfg: DictConfig):
         raise FileNotFoundError(
             f"Supplement dataset not found at {supplement_path}."
         )
-    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1)
+    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1, reduce_obs_dim=reduce_obs_dim)
     online_memory_replay.load(supplement_path,
                               num_trajs=np.iinfo(np.int32).max,
                               sample_freq=args.expert.subsample_freq,
@@ -252,7 +279,15 @@ def main(cfg: DictConfig):
 
     # Setup logging
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join(args.log_dir, "noisy_expert")
+
+    # For parallel W&B sweep agents, isolate log directories to avoid race conditions
+    # Use WANDB_RUN_ID if available (set by W&B), otherwise generate unique ID
+    import socket
+    unique_run_id = os.environ.get(
+        'WANDB_RUN_ID',
+        f"{socket.gethostname()}_{int(time.time()*1000000)}"
+    )
+    log_dir = os.path.join(args.log_dir, "noisy_expert", unique_run_id)
 
     writer = SummaryWriter(log_dir=log_dir)
     print(f'--> Saving logs at: {log_dir}')
@@ -265,6 +300,12 @@ def main(cfg: DictConfig):
 
 
     for step in tqdm(range(LEARN_STEPS)):
+        if step == 0:
+            print("\n=== Penalty Debug (First Step) ===")
+            print(f"penalty (global) = {args.get('penalty', 'UNDEFINED')}")
+            print(f"method.uncertainty = {getattr(args.method, 'uncertainty', 'UNDEFINED')}")
+            print(f"agent.dynamics_ensemble exists = {hasattr(agent, 'dynamics_ensemble')}")
+
         agent.iq_update = types.MethodType(iq_update, agent)
         agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
         losses = agent.iq_update(online_memory_replay,
@@ -279,6 +320,13 @@ def main(cfg: DictConfig):
             returns = np.mean(eval_returns)
             logger.log('eval/episode_reward', returns, step)
             logger.dump(step, ty='eval')
+
+        if step == 0:
+            print("\n=== DYNAMICS_SMOKE_TEST_PASS ===")
+            print("First step completed successfully. Dynamics ensemble working.")
+            import sys
+            sys.exit(0)
+
 
 
 

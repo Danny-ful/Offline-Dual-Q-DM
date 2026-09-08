@@ -2,16 +2,16 @@
 set -euo pipefail
 
 # Usage:
-#   bash scripts/run_wandb_sweep_noisy_expert.sh
+#   bash scripts/run_wandb_sweep_can.sh
 # Optional environment variables:
 #   WANDB_ENTITY=wenqilaid-nanjing-university
-#   WANDB_PROJECT=Offline-Dual-Q-DM-Noisy-Expert
+#   WANDB_PROJECT=Offline-Dual-Q-DM
 #   NUM_AGENTS=3
-#   SWEEP_CONFIG=scripts/wandb_sweep_noisy_expert.yaml
-#   SWEEP_LOG=scripts/sweep_ids_noisy_expert.log
+#   SWEEP_CONFIG=scripts/wandb_sweep_can.yaml
+#   SWEEP_LOG=scripts/sweep_ids_can.log
 #   EXISTING_SWEEP_ID=           # set non-empty to skip creating a new sweep
 #   AUTO_REUSE_SWEEP=1           # if config unchanged, reuse last sweep_id
-#   SWEEP_STATE_FILE=scripts/.sweep_state_noisy_expert.env
+#   SWEEP_STATE_FILE=scripts/.sweep_state_can.env
 #   AGENT_LAUNCH_STAGGER_SECONDS=1  # delay between agent launches
 
 WAIT_FOR_MOUNT_SECONDS="${WAIT_FOR_MOUNT_SECONDS:-0}"
@@ -19,13 +19,7 @@ sleep "$WAIT_FOR_MOUNT_SECONDS"
 
 export USER=ubuntu
 export HOME=/home/ubuntu
-
-# Dynamically determine project root from script location
-# This handles spaces in directory names and works regardless of how the script is invoked
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-echo "INFO: Resolved PROJECT_ROOT=$PROJECT_ROOT"
+PROJECT_ROOT="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
 cd "$PROJECT_ROOT"
 
 CONDA_PROFILE="/home/ubuntu/laiwenqi/anaconda3/etc/profile.d/conda.sh"
@@ -47,13 +41,13 @@ conda activate IQ
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
 
 WANDB_ENTITY="${WANDB_ENTITY:-wenqilaid-nanjing-university}"
-WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM-Noisy-Expert}"
+WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM}"
 NUM_AGENTS="${NUM_AGENTS:-3}"
-SWEEP_CONFIG="${SWEEP_CONFIG:-scripts/wandb_sweep_noisy_expert.yaml}"
-SWEEP_LOG="${SWEEP_LOG:-scripts/sweep_ids_noisy_expert.log}"
+SWEEP_CONFIG="${SWEEP_CONFIG:-scripts/wandb_sweep_can.yaml}"
+SWEEP_LOG="${SWEEP_LOG:-scripts/sweep_ids_can.log}"
 EXISTING_SWEEP_ID="${EXISTING_SWEEP_ID:-}"
 AUTO_REUSE_SWEEP="${AUTO_REUSE_SWEEP:-1}"
-SWEEP_STATE_FILE="${SWEEP_STATE_FILE:-scripts/.sweep_state_noisy_expert.env}"
+SWEEP_STATE_FILE="${SWEEP_STATE_FILE:-scripts/.sweep_state_can.env}"
 AGENT_LAUNCH_STAGGER_SECONDS="${AGENT_LAUNCH_STAGGER_SECONDS:-1}"
 
 if [ ! -f "$SWEEP_CONFIG" ]; then
