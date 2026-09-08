@@ -228,9 +228,15 @@ def main(cfg: DictConfig):
         else:
             print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
 
+    # Determine if we need to reduce observation dimension (for Ant-v2)
+    reduce_obs_dim = None
+    if args.env.name == 'Ant-v2' and args.env.get('reduce_obs_dim', False):
+        reduce_obs_dim = args.env.get('effective_obs_dim', 27)
+        print(f'--> Reducing observation dimension to {reduce_obs_dim} for {args.env.name}')
+
     # Load expert data
     expert_path = hydra.utils.to_absolute_path(args.env.expert_path)
-    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed)
+    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed, reduce_obs_dim=reduce_obs_dim)
     expert_memory_replay.load(expert_path,
                               num_trajs=args.expert.demos,
                               sample_freq=args.expert.subsample_freq,
@@ -243,7 +249,7 @@ def main(cfg: DictConfig):
         raise FileNotFoundError(
             f"Supplement dataset not found at {supplement_path}."
         )
-    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1)
+    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1, reduce_obs_dim=reduce_obs_dim)
     online_memory_replay.load(supplement_path,
                               num_trajs=np.iinfo(np.int32).max,
                               sample_freq=args.expert.subsample_freq,
