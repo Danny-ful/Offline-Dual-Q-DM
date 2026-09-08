@@ -35,7 +35,7 @@ command:
   - project_name=Offline-Dual-Q-DM
   - exp_name=penalty_false_can_grid
   - method.uncertainty=False
-  - method.penalty_auto=True
+  - method.penalty_auto=False
   - method.penalty_N=5
   - method.dynamics_ckpt=dynamics/can_expert_sac/ensemble_5.pt
   - ${args_no_hyphens}
@@ -72,6 +72,9 @@ parameters:
 
   method.penalty_lr:
     values: [1e-3]
+
+  method.penalty:
+    values: [0.1, 0.5, 1.0, 2.0]
 
   eval.stochastic:
     values: [False]
