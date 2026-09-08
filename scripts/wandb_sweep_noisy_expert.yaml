@@ -20,6 +20,8 @@ command:
   - train.batch=256
   - method.loss=value
   - method.constrain=True
+  - method.synthetic_constrain=True
+  - method.synthetic_M=1
   - train.use_target=True
   - train.soft_update=True
   - agent.critic_lr=3e-4
@@ -44,6 +46,12 @@ command:
 
 
 parameters:
+  method.synthetic_coef:
+    values: [0.1]
+
+  method.synthetic_warmup_steps:
+    values: [10000]
+
   seed:
     values: [0]
 
