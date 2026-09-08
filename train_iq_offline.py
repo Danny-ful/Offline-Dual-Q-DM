@@ -26,7 +26,7 @@ from dataset.memory import Memory
 from agent import make_agent
 from utils.utils import eval_mode, average_dicts, get_concat_samples, evaluate, soft_update, hard_update
 from utils.logger import Logger
-from iq import iq_loss, prepare_iq_step, update_iq_penalty
+from iq import iq_loss, prepare_iq_step, update_iq_penalty, synthetic_iq_loss
 from tqdm import tqdm
 import pickle
 from dataset.expert_dataset import ExpertDataset
@@ -135,6 +135,11 @@ def main(cfg: DictConfig):
     LEARN_STEPS = int(env_args.learn_steps)
 
     agent = make_agent(env, args)
+
+    if (getattr(args.method, "uncertainty", False)
+            or getattr(args.method, "synthetic_constrain", False)):
+        from agent.dynamics_ensemble import load_iq_dynamics
+        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
 
     if args.pretrain:
         pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
@@ -283,6 +288,13 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
             penalty_u=penalty_u,
             constraint_penalty=constraint_penalty)
         constraint_means.append(constraint_mean)
+
+    synthetic_loss, synthetic_logs = synthetic_iq_loss(
+        agent, obs, step, log_this_step=step % args.log_interval == 0)
+    critic_loss = critic_loss + synthetic_loss
+    loss_dict.update(synthetic_logs)
+    if 'total_loss' in loss_dict:
+        loss_dict['total_loss'] = critic_loss.item()
 
     logger.log('train/critic_loss', critic_loss, step)
 

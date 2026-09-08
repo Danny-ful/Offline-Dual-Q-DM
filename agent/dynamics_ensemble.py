@@ -193,3 +193,39 @@ class DynamicsEnsemble(nn.Module):
         else:
             # backward compat: raw state dict
             self.load_state_dict(payload)
+
+
+def load_iq_dynamics(agent, obs_dim, action_dim):
+    """Load the frozen model when either IQ dynamics-based loss is enabled."""
+    import hydra
+    from iq import validate_synthetic_config
+
+    args = agent.args
+    method = args.method
+    validate_synthetic_config(agent)
+    if not (getattr(method, 'uncertainty', False)
+            or getattr(method, 'synthetic_constrain', False)):
+        return
+    if not method.dynamics_ckpt:
+        raise ValueError('Dynamics-based IQ losses require method.dynamics_ckpt; run train_dynamics.py first')
+    path = hydra.utils.to_absolute_path(method.dynamics_ckpt)
+    payload = torch.load(path, map_location='cpu')
+    cfg = payload.get('cfg', {}) if isinstance(payload, dict) else {}
+    state_dict = payload.get('state_dict', payload)
+    hidden_dim = cfg.get('hidden_dim')
+    if hidden_dim is None:
+        hidden_dim = state_dict['members.0.trunk.0.weight'].shape[0]
+    hidden_depth = cfg.get('hidden_depth')
+    if hidden_depth is None:
+        hidden_depth = sum(key.startswith('members.0.trunk.') and key.endswith('.weight')
+                           for key in state_dict) - 1
+    ensemble = DynamicsEnsemble(
+        obs_dim, action_dim, N=int(method.penalty_N),
+        effective_obs_dim=cfg.get('effective_obs_dim'),
+        hidden_dim=hidden_dim, hidden_depth=hidden_depth,
+    ).to(args.device)
+    ensemble.load(path, map_location=args.device)
+    ensemble.eval()
+    ensemble.requires_grad_(False)
+    agent.dynamics_ensemble = ensemble
+    print(f'--> Loaded dynamics ensemble (N={method.penalty_N}) from {path}')

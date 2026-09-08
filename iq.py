@@ -8,6 +8,25 @@ import math
 import torch
 import torch.nn.functional as F
 
+
+def bellman_constraint(reward, args):
+    """Elementwise implicit-reward constraint, shared by real and model data."""
+    div = args.method.div
+    if div == "hellinger":
+        return torch.relu(reward - 1).square()
+    if div == "kl":
+        return torch.zeros_like(reward)
+    if div == "kl2":
+        return torch.relu(reward).square()
+    if div == "chi":
+        return torch.relu(-2 - reward).square()
+    if div == "js":
+        return torch.relu(reward - math.log(2.0)).square()
+    high = torch.relu(reward - args.right)
+    low = torch.relu(args.left - reward)
+    return (F.smooth_l1_loss(high, torch.zeros_like(high), reduction='none')
+            + F.smooth_l1_loss(low, torch.zeros_like(low), reduction='none'))
+
 # Full IQ-Learn objective with other divergences and options
 def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False,
             *, penalty_u, constraint_penalty):
@@ -183,29 +202,8 @@ def iq_loss(agent, current_Q, current_v, next_v, batch, log_this_step=False,
         if penalty_u is not None:
             reward = reward + penalty_u
 
-        if args.method.div == "hellinger":
-            constrain_loss = (torch.relu(reward - 1))**2
-            # phi_grad = 1/(1+reward)**2
-        elif args.method.div == "kl":
-            # original dual form for kl divergence (sub optimal)
-            constrain_loss = torch.zeros_like(reward)
-        elif args.method.div == "kl2":
-            # biased dual form for kl divergence
-            constrain_loss = (torch.relu(reward))**2
-        elif args.method.div == "chi":
-            constrain_loss = (torch.relu(-2 - reward))**2
-        elif args.method.div == "js":
-            # jensen–shannon
-            constrain_loss = (torch.relu(reward - math.log(2.0)))**2
-        else:
-            # constrain_loss = (torch.relu(reward - args.right))**2 + (torch.relu(args.left - reward))**2
+        constrain_loss = bellman_constraint(reward, args)
 
-            # constrain_loss = torch.relu(reward - args.right) + torch.relu(args.left - reward)
-
-            diff_high = torch.relu(reward - args.right)
-            diff_low = torch.relu(args.left - reward)
-            constrain_loss =F.smooth_l1_loss(diff_high, torch.zeros_like(diff_high), reduction='none')+F.smooth_l1_loss(diff_low, torch.zeros_like(diff_high), reduction='none')
-           
         constraint_mean = constrain_loss.mean()
 
         penalty = constraint_penalty.detach()
@@ -348,6 +346,128 @@ def _compute_dynamics_penalty(agent, batch, *, shared_noise=True):
 
     penalty_full = float(args.method.penalty_coef) * u  # [B, 1]
     return penalty_full
+
+
+def synthetic_done(next_obs, env_name):
+    """Observable termination rules for the repository's standard MuJoCo-v2 tasks.
+
+    Hopper observations clip velocities, so its full simulator-state health
+    check cannot be reconstructed exactly. Time-limit truncations bootstrap.
+    Unknown tasks fail instead of borrowing done from a different action.
+    """
+    finite = torch.isfinite(next_obs).all(dim=-1, keepdim=True)
+    height = next_obs[..., :1]
+    angle = next_obs[..., 1:2]
+    if env_name == 'Hopper-v2':
+        healthy = ((height > 0.7) & (angle.abs() < 0.2)
+                   & (next_obs[..., 1:].abs() < 100).all(dim=-1, keepdim=True))
+    elif env_name == 'Walker2d-v2':
+        healthy = (height > 0.8) & (height < 2.0) & (angle.abs() < 1.0)
+    elif env_name == 'Ant-v2':
+        healthy = (height >= 0.2) & (height <= 1.0)
+    elif env_name == 'HalfCheetah-v2':
+        healthy = torch.ones_like(finite)
+    else:
+        raise ValueError(f'Synthetic Bellman constraint has no termination rule for {env_name!r}')
+    return ~(finite & healthy)
+
+
+def validate_synthetic_config(agent):
+    """Fail early on unsupported synthetic-constraint configurations."""
+    args = agent.args
+    method = args.method
+    if not bool(getattr(method, 'synthetic_constrain', False)):
+        return
+    if method.type != 'iq' or not method.constrain:
+        raise ValueError('synthetic_constrain requires method.type=iq and method.constrain=True')
+    if getattr(agent, 'actor', None) is None or getattr(agent, 'critic_target', None) is None:
+        raise ValueError('synthetic_constrain requires a continuous actor and target critic')
+    coef = float(method.synthetic_coef)
+    if not math.isfinite(coef) or coef < 0 or int(method.synthetic_warmup_steps) < 0:
+        raise ValueError('synthetic_coef must be finite/nonnegative and warmup steps nonnegative')
+    if int(method.synthetic_M) < 1 or int(method.penalty_N) < 1:
+        raise ValueError('Synthetic sampling requires positive synthetic_M and penalty_N')
+    if not callable(getattr(agent, 'synthetic_done_fn', None)):
+        env_name = getattr(getattr(args, 'env', None), 'name', None)
+        synthetic_done(torch.zeros(1, 2), env_name)
+
+
+def synthetic_iq_loss(agent, obs, step, log_this_step=False):
+    """Fresh one-step actor/model samples; only the online critic gets gradients.
+
+    This auxiliary loss is independent of the real-data dual penalty. Model
+    predictions are averaged in value space before applying the constraint.
+    """
+    args = agent.args
+    method = args.method
+    if not bool(getattr(method, 'synthetic_constrain', False)):
+        return obs.new_zeros(()), {}
+    coef = float(method.synthetic_coef)
+    warmup = int(method.synthetic_warmup_steps)
+    if warmup:
+        coef *= min(1.0, max(0.0, float(step) / warmup))
+    # Emit the same diagnostic keys at the first logged warmup step so CSV
+    # loggers establish a stable schema. Non-logging zero-weight steps are free.
+    if coef == 0 and not log_this_step:
+        return obs.new_zeros(()), {}
+
+    ens = agent.dynamics_ensemble
+    B, M = obs.size(0), int(method.synthetic_M)
+    with torch.no_grad():
+        obs = obs.detach()
+        action = agent.actor.sample(obs)[0]
+        dynamics_noise = torch.randn(B, M, ens.effective_obs_dim,
+                                     device=obs.device, dtype=obs.dtype)
+        next_states = ens.sample_next_ensemble(obs, action, M=M, noise=dynamics_noise)
+        N = next_states.size(1)
+        if N != int(method.penalty_N):
+            raise ValueError('Sampled ensemble size must match penalty_N')
+        flat_s = next_states.reshape(B * N * M, -1)
+        if not torch.isfinite(flat_s).all():
+            raise ValueError('Dynamics produced non-finite synthetic next states')
+        done_fn = getattr(agent, 'synthetic_done_fn', None)
+        model_done = (done_fn(flat_s) if done_fn is not None
+                      else synthetic_done(flat_s, args.env.name))
+        continuation = (~model_done).to(obs)
+        actor_noise = torch.randn(B, M, action.size(-1), device=obs.device, dtype=obs.dtype)
+        flat_noise = actor_noise.unsqueeze(1).expand(B, N, M, -1).reshape(B * N * M, -1)
+        next_action, log_prob, _ = agent.actor.sample(flat_s, noise=flat_noise)
+        if 'DoubleQ' in args.q_net._target_:
+            next_q1, next_q2 = agent.critic_target(flat_s, next_action, both=True)
+            next_q = torch.minimum(next_q1, next_q2)
+        else:
+            next_q = agent.critic_target(flat_s, next_action)
+        next_v = next_q - agent.alpha.detach() * log_prob
+        if args.cliptarget:
+            next_v = next_v.clamp(args.left / (1 - agent.gamma),
+                                  args.right / (1 - agent.gamma))
+        target = agent.gamma * (continuation * next_v).view(B, N, M).mean((1, 2)).unsqueeze(1)
+
+        # Match the existing Q-based uncertainty definition, now evaluated on
+        # actor actions, with continuation recomputed for each model transition.
+        member_q = (continuation * next_q).view(B, N, M).mean(2)
+        uncertainty = agent.gamma * member_q.std(1, unbiased=False, keepdim=True)
+        penalty_u = (float(method.penalty_coef) * uncertainty
+                     if method.uncertainty else torch.zeros_like(uncertainty))
+
+    if 'DoubleQ' in args.q_net._target_:
+        heads = agent.critic(obs, action, both=True)
+    else:
+        heads = (agent.critic(obs, action),)
+    violations = torch.stack([bellman_constraint(q - target + penalty_u, args)
+                              for q in heads])
+    loss = coef * violations.mean()
+    logs = {}
+    if log_this_step:
+        logs = {
+            'synthetic/constrain_loss': loss.item(),
+            'synthetic/violation': violations.mean().item(),
+            'synthetic/coef': coef,
+            'synthetic/uncertainty': uncertainty.mean().item(),
+            'synthetic/q': torch.stack(heads).mean().item(),
+            'synthetic/terminal_fraction': (1 - continuation).mean().item(),
+        }
+    return loss, logs
 
 
 def prepare_iq_step(agent, batch):

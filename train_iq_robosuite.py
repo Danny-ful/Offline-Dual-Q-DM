@@ -27,7 +27,7 @@ from dataset.memory import Memory
 from agent import make_agent
 from utils.utils import eval_mode, average_dicts, get_concat_samples, soft_update, hard_update
 from utils.logger import Logger
-from iq import iq_loss, prepare_iq_step, update_iq_penalty
+from iq import iq_loss, prepare_iq_step, update_iq_penalty, synthetic_iq_loss
 from tqdm import tqdm
 
 torch.set_num_threads(2)
@@ -403,6 +403,15 @@ def iq_update_critic(self, policy_batch, expert_batch, logger, step):
             constraint_penalty=constraint_penalty)
         constraint_means.append(constraint_mean)
 
+    synthetic_loss, synthetic_logs = synthetic_iq_loss(
+        agent, obs, step, log_this_step=step % args.log_interval == 0)
+    critic_loss = critic_loss + synthetic_loss
+    loss_dict.update(synthetic_logs)
+    if 'total_loss' in loss_dict:
+        loss_dict['total_loss'] = critic_loss.item()
+    for key, value in synthetic_logs.items():
+        logger.log(f'train/{key}', value, step)
+
     logger.log('train/critic_loss', critic_loss, step)
 
     self.critic_optimizer.zero_grad()
@@ -562,6 +571,21 @@ def main(cfg: DictConfig):
 
     dummy_env = DummyEnv(obs_dim, action_dim)
     agent = make_agent(dummy_env, args)
+
+    if getattr(args.method, 'synthetic_constrain', False):
+        from utils.robosuite_termination import RobosuiteTermination
+        with h5py.File(expert_hdf5_path, 'r') as dataset:
+            first_demo = next(key for key in sorted(dataset['data']) if key.startswith('demo'))
+            obs_group = dataset[f'data/{first_demo}/obs']
+            obs_shapes = {key: obs_group[key].shape[1:] for key in dataset_obs_keys}
+        synthetic_env_name = eval_env_name or {'lift': 'Lift', 'can': 'PickPlaceCan'}.get(task_name.lower())
+        agent.synthetic_done_fn = RobosuiteTermination(
+            synthetic_env_name, obs_shapes, dataset_env_kwargs)
+
+    if (getattr(args.method, 'uncertainty', False)
+            or getattr(args.method, 'synthetic_constrain', False)):
+        from agent.dynamics_ensemble import load_iq_dynamics
+        load_iq_dynamics(agent, obs_dim, action_dim)
 
     # Load pretrained model if specified
     if args.pretrain:
