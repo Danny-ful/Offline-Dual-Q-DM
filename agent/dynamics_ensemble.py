@@ -129,10 +129,19 @@ class DynamicsEnsemble(nn.Module):
 
     @torch.no_grad()
     def sample_next_ensemble(
-        self, obs: torch.Tensor, action: torch.Tensor, M: int = 1
+        self, obs: torch.Tensor, action: torch.Tensor, M: int = 1,
+        noise: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Return samples of shape [B, N, M, obs_dim]."""
+        """Return [B, N, M, obs_dim]; optional [B, M, effective_obs_dim]
+        standard normal noise is shared across members. Otherwise sample independently.
+        """
+        if M < 1:
+            raise ValueError("M must be at least 1")
         B = obs.size(0)
+        if noise is not None:
+            if noise.shape != (B, M, self.effective_obs_dim):
+                raise ValueError("Invalid dynamics noise shape")
+            noise = noise.to(obs).reshape(B * M, self.effective_obs_dim)
         obs_eff = self._slice_obs(obs)
         obs_rep = obs_eff.unsqueeze(1).expand(B, M, -1).reshape(B * M, -1)
         action_rep = action.unsqueeze(1).expand(B, M, -1).reshape(B * M, -1)
@@ -142,7 +151,7 @@ class DynamicsEnsemble(nn.Module):
         pad_dims = obs[:, self.effective_obs_dim:]  # [B, obs_dim - eff]
         for i, member in enumerate(self.members):
             mean, log_std = member(obs_rep, action_rep)
-            eps = torch.randn_like(mean)
+            eps = torch.randn_like(mean) if noise is None else noise
             s_next_short = obs_rep + mean + torch.exp(log_std) * eps  # [B*M, eff]
             s_next_short = s_next_short.view(B, M, self.effective_obs_dim)
             if self.effective_obs_dim < self.obs_dim:

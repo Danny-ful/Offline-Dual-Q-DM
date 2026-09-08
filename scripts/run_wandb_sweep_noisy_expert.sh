@@ -19,13 +19,7 @@ sleep "$WAIT_FOR_MOUNT_SECONDS"
 
 export USER=ubuntu
 export HOME=/home/ubuntu
-
-# Dynamically determine project root from script location
-# This handles spaces in directory names and works regardless of how the script is invoked
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-echo "INFO: Resolved PROJECT_ROOT=$PROJECT_ROOT"
+PROJECT_ROOT="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
 cd "$PROJECT_ROOT"
 
 CONDA_PROFILE="/home/ubuntu/laiwenqi/anaconda3/etc/profile.d/conda.sh"

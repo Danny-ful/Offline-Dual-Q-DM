@@ -287,9 +287,17 @@ class DiagGaussianActor(nn.Module):
         dist = SquashedNormal(mu, std)
         return dist
 
-    def sample(self, obs):
+    def sample(self, obs, noise=None):
+        """Sample actions, optionally using caller-provided standard normal noise."""
         dist = self.forward(obs)
-        action = dist.rsample()
+        if noise is None:
+            action = dist.rsample()
+        else:
+            if noise.shape != dist.loc.shape:
+                raise ValueError("Actor noise must match the action distribution shape")
+            action = dist.loc + dist.scale * noise.to(dist.loc)
+            for transform in dist.transforms:
+                action = transform(action)
         log_prob = dist.log_prob(action).sum(-1, keepdim=True)
 
         return action, log_prob, dist.mean

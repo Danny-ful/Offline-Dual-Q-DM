@@ -106,7 +106,7 @@ method:
   lambda_gp: 10
   mix_coeff: 1
 
-  # Dynamics-uncertainty penalty
+  # Dynamics penalty uses shared member noise and the batch continuation mask.
   uncertainty: false
   penalty_auto: true
   penalty_target: 5.0
