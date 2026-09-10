@@ -43,8 +43,10 @@ fi
 # Example: DATASET_VARIANT=medium_expert-v2 bash scripts/run_dynamic.sh
 # Extra arguments are forwarded to every run, e.g. dyn.epochs=100 seed=1.
 DATASET_VARIANT="${DATASET_VARIANT:-full_replay-v2}"
-ENV_NAMES=(ant cheetah hopper walker)
-DATASET_PREFIXES=(ant halfcheetah hopper walker2d)
+# ENV_NAMES=(ant cheetah hopper walker)
+# DATASET_PREFIXES=(ant halfcheetah hopper walker2d)
+ENV_NAMES=(hopper)
+DATASET_PREFIXES=(hopper)
 EXPERT_PATHS=()
 SUPPLEMENT_PATHS=()
 
