@@ -23,6 +23,7 @@ class ReduceObsWrapper(gym.ObservationWrapper):
         super().__init__(env)
         self.reduced_obs_dim = obs_dim
         original_space = env.observation_space
+        self.original_obs_dim = original_space.shape[0]
         self.observation_space = gym.spaces.Box(
             low=original_space.low[:obs_dim],
             high=original_space.high[:obs_dim],

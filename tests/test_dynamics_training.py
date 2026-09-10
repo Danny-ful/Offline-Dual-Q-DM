@@ -158,12 +158,58 @@ class DynamicsTrainingTests(unittest.TestCase):
         self.assertEqual(len(report['overall']['disagreement_bins']), 1)
         json.dumps(report, allow_nan=False)
 
+    def test_dataset_observation_projection_and_dimension_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cfg = OmegaConf.create({
+                'env': {'expert_path': str(root / 'expert.pkl'),
+                        'supplement_path': str(root / 'supplement.pkl')},
+                'expert': {'demos': 1, 'subsample_freq': 1}})
+
+            def write_data(name, width, action_width=8, next_width=None):
+                obs = np.arange(2 * width, dtype=np.float32).reshape(2, width)
+                nxt = obs + 1 if next_width is None else np.zeros((2, next_width))
+                with (root / (name + '.pkl')).open('wb') as stream:
+                    pickle.dump(dict(states=[obs], next_states=[nxt],
+                                     actions=[np.ones((2, action_width))], rewards=[np.zeros(2)],
+                                     dones=[np.zeros(2)], lengths=[2]), stream)
+                return obs
+
+            for expert_width, supplement_width in ((111, 111), (27, 27), (111, 27), (27, 111)):
+                with self.subTest(expert=expert_width, supplement=supplement_width):
+                    expert = write_data('expert', expert_width)
+                    supplement = write_data('supplement', supplement_width)
+                    obs, actions, nxt, ids, sources = training._build_dataset(cfg, 0, 27, 8, 111)
+                    expected = np.concatenate((expert[:, :27], supplement[:, :27]))
+                    np.testing.assert_array_equal(obs, expected)
+                    np.testing.assert_array_equal(nxt, expected + 1)
+                    self.assertEqual(actions.shape, (4, 8))
+                    self.assertEqual(ids.tolist(), ['expert:0'] * 2 + ['supplement:0'] * 2)
+                    self.assertEqual(sources.tolist(), ['expert'] * 2 + ['supplement'] * 2)
+
+            for width, action_width, next_width in ((26, 8, None), (110, 8, None),
+                                                    (111, 7, None), (111, 8, 27)):
+                with self.subTest(width=width, action=action_width, next_width=next_width):
+                    write_data('supplement', width, action_width, next_width)
+                    with self.assertRaisesRegex(ValueError, r'supplement dataset.*got obs='):
+                        training._build_dataset(cfg, 0, 27, 8, 111)
+            # Without a reduction wrapper, extra dimensions must still be rejected.
+            write_data('expert', 111)
+            with self.assertRaisesRegex(ValueError, r'expert dataset.*dimensions \[27\]'):
+                training._build_dataset(cfg, 0, 27, 8)
+
     def test_training_entrypoint_writes_reloadable_artifacts(self):
+        self._check_training_entrypoint(obs_dim=2, raw_obs_dim=2)
+
+    def test_training_entrypoint_with_reduced_ant_observations(self):
+        self._check_training_entrypoint(obs_dim=27, raw_obs_dim=111)
+
+    def _check_training_entrypoint(self, obs_dim, raw_obs_dim):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             data = dict(states=[], next_states=[], actions=[], rewards=[], dones=[], lengths=[])
             for i in range(4):
-                obs = np.arange(12, dtype=np.float32).reshape(6, 2) / 10 + i
+                obs = np.arange(6 * raw_obs_dim, dtype=np.float32).reshape(6, raw_obs_dim) / 10 + i
                 for key, value in dict(states=obs, next_states=obs + .2, actions=obs[:, :1] / 10,
                                        rewards=np.zeros(6), dones=np.zeros(6), lengths=6).items():
                     data[key].append(value)
@@ -174,8 +220,10 @@ class DynamicsTrainingTests(unittest.TestCase):
                 'env': {'expert_path': 'expert.pkl', 'supplement_path': 'supplement.pkl', 'demo': 'smoke.pkl'},
                 'expert': {'demos': 2, 'subsample_freq': 1}, 'method': {'penalty_N': 2},
                 'dyn': {'epochs': 2, 'batch_size': 7, 'hidden_dim': 8, 'hidden_depth': 1, 'val_frac': .25}})
-            env = SimpleNamespace(observation_space=SimpleNamespace(shape=(2,)),
+            env = SimpleNamespace(observation_space=SimpleNamespace(shape=(obs_dim,)),
                                   action_space=SimpleNamespace(shape=(1,)), close=lambda: None)
+            if raw_obs_dim != obs_dim:
+                env.original_obs_dim = raw_obs_dim
             with patch.dict('sys.modules', {'agent.dynamics_ensemble': model,
                                            'make_envs': SimpleNamespace(make_env=lambda cfg: env)}), \
                     patch.object(training.hydra.utils, 'to_absolute_path', side_effect=lambda p: str(root / p)):
@@ -184,7 +232,7 @@ class DynamicsTrainingTests(unittest.TestCase):
             with Path(str(stem) + '_diagnostics.json').open() as stream:
                 report = json.load(stream)
             self.assertEqual(report['validation']['status'], 'ok')
-            loaded = model.DynamicsEnsemble(2, 1, N=2, hidden_dim=8, hidden_depth=1)
+            loaded = model.DynamicsEnsemble(obs_dim, 1, N=2, hidden_dim=8, hidden_depth=1)
             loaded.load(str(stem) + '.pt')
             self.assertEqual(len(report['training']['best_epochs']), 2)
             with np.load(str(stem) + '_validation.npz') as samples:

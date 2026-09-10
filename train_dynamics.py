@@ -19,8 +19,13 @@ from omegaconf import DictConfig, OmegaConf
 from dataset.expert_dataset import ExpertDataset
 
 
-def _build_dataset(cfg: DictConfig, seed: int):
-    """Keep source-qualified trajectory IDs; terminal flags may omit timeouts."""
+def _build_dataset(cfg: DictConfig, seed: int, obs_dim=None, action_dim=None,
+                   original_obs_dim=None):
+    """Align observations before stacking; keep source-qualified trajectory IDs.
+
+    Accept raw or already-reduced observations when ReduceObsWrapper is active.
+    Terminal flags may omit timeouts.
+    """
     if int(cfg.expert.demos) < 1 or int(cfg.expert.subsample_freq) < 1:
         raise ValueError("expert.demos and expert.subsample_freq must be positive")
     arrays = [[], [], []]
@@ -37,8 +42,27 @@ def _build_dataset(cfg: DictConfig, seed: int):
             raise ValueError(f"{source} dataset has no transitions after subsampling")
         for index in range(len(data)):
             obs, next_obs, action, _, _ = data[index]
+            obs, next_obs, action = (np.asarray(value, dtype=np.float32)
+                                     for value in (obs, next_obs, action))
+            if action.ndim == 0:
+                action = action.reshape(1)
+            if obs_dim is not None:
+                allowed_obs_dims = {obs_dim, original_obs_dim or obs_dim}
+                if (obs.ndim != 1 or obs.shape[0] not in allowed_obs_dims
+                        or next_obs.shape != obs.shape
+                        or action.shape != (action_dim,)):
+                    raise ValueError(
+                        f"{source} dataset at {path}, transition {index}: "
+                        f"observation/action dimensions do not match the environment; "
+                        f"got obs={obs.shape}, next_obs={next_obs.shape}, action={action.shape}; "
+                        f"expected obs and next_obs dimensions {sorted(allowed_obs_dims)}, "
+                        f"action=({action_dim},)"
+                    )
+                # Apply the same prefix projection as ReduceObsWrapper before
+                # stacking, including when expert and supplement widths differ.
+                obs, next_obs = obs[:obs_dim], next_obs[:obs_dim]
             for target, value in zip(arrays, (obs, action, next_obs)):
-                target.append(np.asarray(value, dtype=np.float32))
+                target.append(value)
             trajectory_ids.append(f"{source}:{data.get_idx[index][0]}")
             sources.append(source)
         print(f"--> {source}: {len(data)} transitions")
@@ -275,6 +299,7 @@ def main(cfg: DictConfig) -> None:
     try:
         obs_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
+        original_obs_dim = getattr(env, "original_obs_dim", obs_dim)
     finally:
         env.close()
     dyn_cfg = cfg.get("dyn", {}) or {}
@@ -282,9 +307,8 @@ def main(cfg: DictConfig) -> None:
     N = int(getattr(cfg.method, "penalty_N", dyn_cfg.get("N", 5)))
     if not 1 <= effective_obs_dim <= obs_dim or N < 1:
         raise ValueError("Invalid effective_obs_dim or ensemble size")
-    obs, actions, next_obs, trajectory_ids, sources = _build_dataset(cfg, cfg.seed)
-    if obs.shape[1] != obs_dim or actions.shape[1] != action_dim:
-        raise ValueError("Dataset observation/action dimensions do not match the environment")
+    obs, actions, next_obs, trajectory_ids, sources = _build_dataset(
+        cfg, cfg.seed, obs_dim, action_dim, original_obs_dim)
     obs = obs[:, :effective_obs_dim]
     next_obs = next_obs[:, :effective_obs_dim]
     train_idx, val_idx = _split_trajectories(trajectory_ids, sources, float(dyn_cfg.get("val_frac", .05)), cfg.seed)
