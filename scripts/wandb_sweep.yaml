@@ -10,11 +10,11 @@ command:
   - ${env}
   - python
   - ${program}
-  - env=cheetah
+  - env=hopper
   - agent=sac
   - offline=True
-  - env.expert_path=experts/halfcheetah-v2_expert_sac.pkl
-  - env.supplement_path=supplement/halfcheetah-v2_expert_sac.pkl
+  - env.expert_path=experts/hopper.pkl
+  - env.supplement_path=supplement/hopper_full_replay-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -37,7 +37,7 @@ command:
   - method.uncertainty=False
   - method.penalty_auto=True
   - method.penalty_N=5
-  - method.dynamics_ckpt=dynamics/halfcheetah-v2_expert_sac/ensemble_5.pt
+  - method.dynamics_ckpt=dynamics/hopper-v2_expert_sac/ensemble_5.pt
   - ${args_no_hyphens}
   - q_net._target_=agent.sac_models.DoubleQCritic
   - env.learn_steps=6e5
@@ -53,7 +53,7 @@ parameters:
     values: [1.2, 0.8]
 
   agent.init_temp:
-    values: [0.5, 0.4]
+    values: [1.0, 0.8]
 
   method.penalty_target:
     values: [5]
@@ -62,7 +62,7 @@ parameters:
     values: [0.5]
 
   value_ratio:
-    values: [1.0, 0.8]
+    values: [1.0]
 
   agent.actor_lr:
     values: [6e-5, 3e-5]

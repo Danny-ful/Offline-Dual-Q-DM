@@ -41,7 +41,7 @@ conda activate IQ
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
 
 WANDB_ENTITY="${WANDB_ENTITY:-wenqilaid-nanjing-university}"
-WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM}"
+WANDB_PROJECT="${WANDB_PROJECT:-robosuite}"
 NUM_AGENTS="${NUM_AGENTS:-3}"
 SWEEP_CONFIG="${SWEEP_CONFIG:-scripts/wandb_sweep_can.yaml}"
 SWEEP_LOG="${SWEEP_LOG:-scripts/sweep_ids_can.log}"
