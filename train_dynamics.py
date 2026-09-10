@@ -302,6 +302,11 @@ def main(cfg: DictConfig) -> None:
         original_obs_dim = getattr(env, "original_obs_dim", obs_dim)
     finally:
         env.close()
+    # Dynamics training bypasses make_agent, which normally fills these fields.
+    cfg.agent.obs_dim = obs_dim
+    cfg.agent.action_dim = action_dim
+    # Resolve before training so invalid metadata cannot discard a completed run.
+    resolved_config = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     dyn_cfg = cfg.get("dyn", {}) or {}
     effective_obs_dim = int(dyn_cfg.get("effective_obs_dim", obs_dim))
     N = int(getattr(cfg.method, "penalty_N", dyn_cfg.get("N", 5)))
@@ -328,7 +333,7 @@ def main(cfg: DictConfig) -> None:
     training["split"] = {"unit": "trajectory", "val_frac": float(dyn_cfg.get("val_frac", .05)),
                          "train_trajectories": np.unique(trajectory_ids[train_np]).tolist(),
                          "val_trajectories": np.unique(trajectory_ids[val_np]).tolist()}
-    training["config"] = OmegaConf.to_container(cfg, resolve=True)
+    training["config"] = resolved_config
     demo_stem = os.path.splitext(os.path.basename(cfg.env.demo))[0]
     save_dir = hydra.utils.to_absolute_path(f"dynamics/{demo_stem}")
     os.makedirs(save_dir, exist_ok=True)

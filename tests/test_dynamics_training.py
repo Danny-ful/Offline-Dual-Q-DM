@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from hydra import compose, initialize_config_dir
 import numpy as np
 from omegaconf import OmegaConf
 import torch
@@ -202,9 +203,12 @@ class DynamicsTrainingTests(unittest.TestCase):
         self._check_training_entrypoint(obs_dim=2, raw_obs_dim=2)
 
     def test_training_entrypoint_with_reduced_ant_observations(self):
-        self._check_training_entrypoint(obs_dim=27, raw_obs_dim=111)
+        for agent_config in ('softq', 'sac'):
+            with self.subTest(agent=agent_config):
+                self._check_training_entrypoint(obs_dim=27, raw_obs_dim=111,
+                                               agent_config=agent_config)
 
-    def _check_training_entrypoint(self, obs_dim, raw_obs_dim):
+    def _check_training_entrypoint(self, obs_dim, raw_obs_dim, agent_config='sac'):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             data = dict(states=[], next_states=[], actions=[], rewards=[], dones=[], lengths=[])
@@ -216,10 +220,17 @@ class DynamicsTrainingTests(unittest.TestCase):
             for name in ('expert', 'supplement'):
                 with (root / (name + '.pkl')).open('wb') as stream:
                     pickle.dump(data, stream)
-            cfg = OmegaConf.create({'device': 'cpu', 'seed': 2,
-                'env': {'expert_path': 'expert.pkl', 'supplement_path': 'supplement.pkl', 'demo': 'smoke.pkl'},
-                'expert': {'demos': 2, 'subsample_freq': 1}, 'method': {'penalty_N': 2},
-                'dyn': {'epochs': 2, 'batch_size': 7, 'hidden_dim': 8, 'hidden_depth': 1, 'val_frac': .25}})
+            # Keep real mandatory dimensions and interpolations to exercise
+            # configuration resolution when saving training metadata.
+            with initialize_config_dir(version_base=None, config_dir=str(
+                    Path(__file__).resolve().parents[1] / 'conf')):
+                cfg = compose(config_name='config', overrides=[
+                    'env=ant', f'agent={agent_config}', 'seed=2',
+                    'env.expert_path=expert.pkl', 'env.supplement_path=supplement.pkl',
+                    'env.demo=smoke.pkl', 'expert.demos=2', 'method.penalty_N=2',
+                    'dyn.epochs=2', 'dyn.batch_size=7', 'dyn.hidden_dim=8',
+                    'dyn.hidden_depth=1', 'dyn.val_frac=0.25',
+                    f'dyn.effective_obs_dim={obs_dim}'])
             env = SimpleNamespace(observation_space=SimpleNamespace(shape=(obs_dim,)),
                                   action_space=SimpleNamespace(shape=(1,)), close=lambda: None)
             if raw_obs_dim != obs_dim:
@@ -232,6 +243,15 @@ class DynamicsTrainingTests(unittest.TestCase):
             with Path(str(stem) + '_diagnostics.json').open() as stream:
                 report = json.load(stream)
             self.assertEqual(report['validation']['status'], 'ok')
+            saved_config = report['training']['config']
+            sections = ['agent', 'q_net']
+            if agent_config == 'sac':
+                sections.append('diag_gaussian_actor')
+            for section in sections:
+                self.assertEqual(saved_config[section]['obs_dim'], obs_dim)
+                self.assertEqual(saved_config[section]['action_dim'], 1)
+            checkpoint = torch.load(str(stem) + '.pt', weights_only=True)
+            self.assertEqual(checkpoint['training_metadata']['config'], saved_config)
             loaded = model.DynamicsEnsemble(obs_dim, 1, N=2, hidden_dim=8, hidden_depth=1)
             loaded.load(str(stem) + '.pt')
             self.assertEqual(len(report['training']['best_epochs']), 2)
