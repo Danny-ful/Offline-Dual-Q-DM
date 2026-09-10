@@ -1,0 +1,28 @@
+# Shared observation order and dataset selection with Robosuite IQ.
+defaults:
+  - config_robosuite
+  - _self_
+
+device: auto
+
+robosuite:
+  # Relative to the project working directory, or set an absolute server path.
+  dataset_root: robomimic
+
+dyn:
+  epochs: 150
+  batch_size: 256
+  lr: 1e-3
+  weight_decay: 1e-5
+  hidden_dim: 256
+  hidden_depth: 3
+  val_frac: 0.05
+  normalization_eps: 1e-6
+  diagnostic_bins: 10
+  log_interval: 5
+  output_dir: dynamics/robosuite
+  check_only: false
+
+hydra:
+  job:
+    chdir: false

@@ -251,6 +251,15 @@ def load_iq_dynamics(agent, obs_dim, action_dim):
         raise ValueError('Dynamics-based IQ losses require method.dynamics_ckpt; run train_dynamics.py first')
     path = hydra.utils.to_absolute_path(method.dynamics_ckpt)
     payload = torch.load(path, map_location='cpu')
+    dataset = payload.get('training_metadata', {}).get('dataset', {}) if isinstance(payload, dict) else {}
+    robosuite = getattr(args, 'robosuite', None)
+    if robosuite is not None and dataset:
+        if dataset.get('task') != str(robosuite.task).lower():
+            raise ValueError('Dynamics checkpoint task does not match robosuite.task')
+        if dataset.get('obs_keys') != list(robosuite.obs_keys):
+            raise ValueError('Dynamics checkpoint observation order does not match robosuite.obs_keys')
+        if payload.get('cfg', {}).get('obs_dim') != obs_dim:
+            raise ValueError('Dynamics checkpoint observation dimension does not match Robosuite IQ')
     cfg = payload.get('cfg', {}) if isinstance(payload, dict) else {}
     state_dict = payload.get('state_dict', payload)
     hidden_dim = cfg.get('hidden_dim')

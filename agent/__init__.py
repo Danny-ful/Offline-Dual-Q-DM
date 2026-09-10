@@ -1,9 +1,8 @@
-import gym
-from agent.sac import SAC
-from agent.softq import SoftQ
-
-
 def make_agent(env, args):
+    # Offline dynamics only imports agent.dynamics_ensemble; keep Gym and the
+    # policy stack out of that path so it does not need simulator dependencies.
+    import gym
+
     obs_dim = env.observation_space.shape[0]
     method_type = getattr(args.method, "type", None)
 
@@ -13,6 +12,7 @@ def make_agent(env, args):
                 "ReCOIL currently only supports continuous action spaces."
             )
         print('--> Using Soft-Q agent')
+        from agent.softq import SoftQ
         action_dim = env.action_space.n
         # TODO: Simplify logic
         args.agent.obs_dim = obs_dim
@@ -33,6 +33,7 @@ def make_agent(env, args):
             agent = ReCOIL(obs_dim, action_dim, action_range, args.train.batch, args)
         else:
             print('--> Using SAC agent')
+            from agent.sac import SAC
             agent = SAC(obs_dim, action_dim, action_range, args.train.batch, args)
 
     return agent

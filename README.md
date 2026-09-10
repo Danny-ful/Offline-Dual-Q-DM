@@ -204,6 +204,73 @@ correlations are `null`. NPZ stores split transition indices and per-transition
 metrics for plotting. These diagnostics use the same holdout as model selection,
 so they are not an independent test-set or multi-step rollout evaluation.
 
+### Robomimic Lift / Can dynamics
+
+Train a separate ensemble for each task using all PH `low_dim` and MG
+`low_dim_sparse` trajectories. Run on the server in the existing `IQ` environment:
+
+```bash
+cd "/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
+bash scripts/run_dynamic_robosuite.sh
+```
+
+The script defaults to that project directory and activates `IQ` if needed. It
+checks both tasks before training either. Set `PROJECT_ROOT` / `CONDA_PROFILE`
+for another installation, or `CONDA_ENV=''` to use the active Python environment.
+It needs no running Robosuite / MuJoCo simulator.
+
+Inputs are `robomimic/{lift,can}/ph/low_dim_v15.hdf5` and
+`robomimic/{lift,can}/mg/low_dim_sparse_v15.hdf5`. To use MG dense instead:
+
+```bash
+bash scripts/run_dynamic_robosuite.sh robosuite.supplement_hdf5_type=low_dim_dense
+```
+
+For a single task, custom data root, or a small smoke run:
+
+```bash
+python train_dynamics_robosuite.py robosuite.task=lift \
+  'robosuite.dataset_root="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/robomimic"' \
+  robosuite.expert_dataset_type=ph robosuite.expert_hdf5_type=low_dim \
+  robosuite.supplement_dataset_type=mg robosuite.supplement_hdf5_type=low_dim_sparse \
+  robosuite.expert_trajs=null robosuite.supplement_trajs=null \
+  method.penalty_N=5 dyn.epochs=150 dyn.val_frac=0.05 seed=0
+
+# Load and validate data and splits without training:
+python train_dynamics_robosuite.py robosuite.task=can dyn.check_only=true
+
+# Small server smoke run; TASKS defaults to 'lift can':
+TASKS=lift bash scripts/run_dynamic_robosuite.sh \
+  robosuite.expert_trajs=4 robosuite.supplement_trajs=4 dyn.epochs=2
+```
+
+`null` selects all trajectories; as in IQ, each trajectory is truncated after
+its first reward of one, including that transition. IQ and dynamics share the
+same HDF5 loader and configured `robosuite.obs_keys` order. The model predicts
+all selected observation dimensions using original dataset action units.
+It does not learn rewards or terminal flags. PH and MG transitions are pooled
+in their original proportions, with fixed member bootstraps and separate
+whole-trajectory holdouts per source. Normalization is fitted on training data
+only. Training and validation tensors are held on the selected device; defaults
+choose CUDA when available, otherwise CPU (`device=cpu` forces CPU).
+
+Each run saves `config.yaml`, `ensemble_<N>.pt`, `ensemble_<N>_diagnostics.json`
+and `ensemble_<N>_validation.npz` under:
+
+```text
+dynamics/robosuite/<task>/<expert-type>_<hdf5-type>__<supplement-type>_<hdf5-type>/seed<seed>/<run-id>/
+```
+
+The trainer prints the exact checkpoint path. The checkpoint records dataset
+paths, observation order / shapes, environment metadata and source-qualified
+demo IDs. IQ rejects a new Robosuite checkpoint with a different task or
+observation order. Use its matching `method.penalty_N` and
+`method.dynamics_ckpt` when enabling `method.uncertainty=true` or
+`method.synthetic_constrain=true` in `train_iq_robosuite.py`. Older checkpoints
+without dataset metadata retain their existing loading behavior. As above,
+diagnostics describe one-step performance on the model-selection holdout,
+not an independent test set or policy evaluation.
+
 ## One-step synthetic Bellman constraint
 
 Enable `method.synthetic_constrain=True` with `method.constrain=True` to add an
