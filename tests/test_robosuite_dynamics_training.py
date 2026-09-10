@@ -50,7 +50,7 @@ def config(root, task='lift', overrides=()):
         return compose(config_name='config_dynamics_robosuite', overrides=[
             f'robosuite.task={task}', f'robosuite.dataset_root="{root / "robomimic"}"',
             f'dyn.output_dir="{root / "output"}"', 'device=cpu',
-            'method.penalty_N=2', 'dyn.epochs=2', 'dyn.batch_size=7',
+            'method.penalty_N=5', 'dyn.epochs=2', 'dyn.batch_size=7',
             'dyn.hidden_dim=8', 'dyn.hidden_depth=1', 'dyn.val_frac=0.25', *overrides])
 
 
@@ -134,7 +134,11 @@ class RobosuiteDynamicsTrainingTests(unittest.TestCase):
                     self.assertFalse((root / 'output' / task).exists())
                     cfg.dyn.check_only = False
                     training.main.__wrapped__(cfg)
-                    checkpoint = next((root / 'output' / task).rglob('ensemble_2.pt'))
+                    model_dir = (root / 'output' / task /
+                                 'ph_low_dim__mg_low_dim_sparse')
+                    checkpoint = model_dir / 'ensemble_5.pt'
+                    self.assertTrue(checkpoint.is_file())
+                    self.assertEqual([path.name for path in model_dir.iterdir()], ['ensemble_5.pt'])
                     payload = torch.load(checkpoint, weights_only=True)
                     metadata = payload['training_metadata']
                     self.assertEqual(payload['cfg']['obs_dim'], obs_dim)
@@ -142,11 +146,8 @@ class RobosuiteDynamicsTrainingTests(unittest.TestCase):
                     self.assertEqual(len(metadata['split']['val_trajectories']), 2)
                     self.assertFalse(set(metadata['split']['train_trajectories']) &
                                      set(metadata['split']['val_trajectories']))
-                    report = json.loads(checkpoint.with_name('ensemble_2_diagnostics.json').read_text())
-                    self.assertEqual(report['validation']['status'], 'ok')
-                    self.assertEqual(set(report['validation']['by_source']), {'expert', 'supplement'})
-                    with np.load(checkpoint.with_name('ensemble_2_validation.npz')) as samples:
-                        self.assertEqual(len(samples['mse']), len(samples['val_indices']))
+                    self.assertEqual(metadata['validation']['status'], 'ok')
+                    self.assertEqual(set(metadata['validation']['by_source']), {'expert', 'supplement'})
                     # Existing IQ loader must accept, freeze, and sample this checkpoint.
                     cfg.method.uncertainty = True
                     cfg.method.dynamics_ckpt = str(checkpoint)
@@ -156,7 +157,7 @@ class RobosuiteDynamicsTrainingTests(unittest.TestCase):
                     self.assertTrue(all(not p.requires_grad for p in agent.dynamics_ensemble.parameters()))
                     samples = agent.dynamics_ensemble.sample_next_ensemble(
                         torch.zeros(3, obs_dim), torch.zeros(3, 7), M=2)
-                    self.assertEqual(samples.shape, (3, 2, 2, obs_dim))
+                    self.assertEqual(samples.shape, (3, 5, 2, obs_dim))
                     self.assertTrue(torch.isfinite(samples).all())
                     cfg.robosuite.obs_keys = KEYS[::-1]
                     with self.assertRaisesRegex(ValueError, 'observation order'):
@@ -176,7 +177,7 @@ class RobosuiteDynamicsTrainingTests(unittest.TestCase):
                     f'robosuite.dataset_root="{root / "robomimic"}"',
                     f'dyn.output_dir="{root / "output"}"', 'device=cpu',
                     'dyn.epochs=1', 'dyn.hidden_dim=8', 'dyn.hidden_depth=1',
-                    'method.penalty_N=2']
+                    'method.penalty_N=5']
             result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('can/ph/low_dim_v15.hdf5', result.stderr)
@@ -184,8 +185,9 @@ class RobosuiteDynamicsTrainingTests(unittest.TestCase):
             write_pair(root, 'can')
             result = subprocess.run(args, cwd=ROOT, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            checkpoints = list((root / 'output').rglob('ensemble_2.pt'))
+            checkpoints = list((root / 'output').rglob('ensemble_5.pt'))
             self.assertEqual(len(checkpoints), 2)
+            self.assertEqual(len(list((root / 'output').rglob('*.*'))), 2)
             self.assertIn('Finished dynamics training for: lift can', result.stdout)
 
 

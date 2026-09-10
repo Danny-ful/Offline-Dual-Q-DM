@@ -1,11 +1,9 @@
 """Fit one offline dynamics ensemble per Robomimic task, without a simulator."""
 from __future__ import annotations
 
-import datetime
-import json
+import os
 from pathlib import Path
 import random
-import uuid
 import warnings
 
 import hydra
@@ -114,9 +112,11 @@ def main(cfg: DictConfig):
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
     dyn = cfg.dyn
+    if int(cfg.method.penalty_N) != 5:
+        raise ValueError('Robosuite dynamics output is fixed to a five-member ensemble; use method.penalty_N=5')
     if min(int(dyn.epochs), int(dyn.batch_size), int(dyn.log_interval),
-           int(dyn.hidden_dim), int(dyn.diagnostic_bins), int(cfg.method.penalty_N)) < 1:
-        raise ValueError('Training sizes, intervals and ensemble size must be positive')
+           int(dyn.hidden_dim), int(dyn.diagnostic_bins)) < 1:
+        raise ValueError('Training sizes and intervals must be positive')
     if int(dyn.hidden_depth) < 0:
         raise ValueError('dyn.hidden_depth must be nonnegative')
     for key in ('lr', 'normalization_eps', 'weight_decay'):
@@ -136,16 +136,12 @@ def main(cfg: DictConfig):
         print('--> Dataset checks passed; no dynamics training or checkpoint output')
         return
 
-    # Reserve an isolated output directory before spending time on training.
     robo = cfg.robosuite
     combination = (f'{robo.expert_dataset_type}_{robo.expert_hdf5_type}__'
                    f'{robo.supplement_dataset_type}_{robo.supplement_hdf5_type}')
-    run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f') + '_' + uuid.uuid4().hex[:8]
     save_dir = (Path(hydra.utils.to_absolute_path(str(dyn.output_dir))) /
-                dataset_metadata['task'] / combination / f'seed{cfg.seed}' / run_id)
-    save_dir.mkdir(parents=True, exist_ok=False)
-    OmegaConf.save(cfg, save_dir / 'config.yaml')
-    print(f'--> Output directory: {save_dir}')
+                dataset_metadata['task'] / combination)
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     obs_t, act_t, next_t = (torch.as_tensor(values, dtype=torch.float32, device=cfg.device)
                           for values in (obs, actions, nxt))
@@ -154,19 +150,19 @@ def main(cfg: DictConfig):
                                 hidden_dim=int(dyn.hidden_dim), hidden_depth=int(dyn.hidden_depth),
                                 effective_obs_dim=obs_dim).to(cfg.device)
     training = _train_ensemble(ensemble, obs_t, act_t, next_t, train_idx, val_idx, dyn, cfg.seed)
-    diagnostics, samples = _diagnostics(ensemble, obs_t, act_t, next_t, val_idx, ids, sources,
-                                        int(dyn.batch_size), int(dyn.diagnostic_bins))
+    diagnostics, _ = _diagnostics(ensemble, obs_t, act_t, next_t, val_idx, ids, sources,
+                                  int(dyn.batch_size), int(dyn.diagnostic_bins))
     training.update(config=resolved_config, dataset=dataset_metadata,
+                    validation=diagnostics,
                     split={'unit': 'trajectory', 'val_frac': float(dyn.val_frac),
                            'train_trajectories': np.unique(ids[train_np]).tolist(),
                            'val_trajectories': np.unique(ids[val_np]).tolist()})
-    stem = save_dir / f'ensemble_{ensemble.N}'
-    ensemble.save(str(stem) + '.pt', training_metadata=training)
-    with Path(str(stem) + '_diagnostics.json').open('w') as stream:
-        json.dump({'training': training, 'validation': diagnostics}, stream, indent=2, allow_nan=False)
-    np.savez_compressed(str(stem) + '_validation.npz', train_indices=train_np, val_indices=val_np, **samples)
-    print(f'--> Saved {stem}.pt, {stem}_diagnostics.json and {stem}_validation.npz')
-    print(f'--> IQ override: method.penalty_N={ensemble.N} method.dynamics_ckpt="{stem}.pt"')
+    checkpoint = save_dir / 'ensemble_5.pt'
+    temporary = save_dir / '.ensemble_5.pt.tmp'
+    ensemble.save(str(temporary), training_metadata=training)
+    os.replace(temporary, checkpoint)
+    print(f'--> Saved {checkpoint} (replaces an existing checkpoint at this path)')
+    print(f'--> IQ override: method.penalty_N={ensemble.N} method.dynamics_ckpt="{checkpoint}"')
 
 
 if __name__ == '__main__':

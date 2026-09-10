@@ -254,16 +254,19 @@ whole-trajectory holdouts per source. Normalization is fitted on training data
 only. Training and validation tensors are held on the selected device; defaults
 choose CUDA when available, otherwise CPU (`device=cpu` forces CPU).
 
-Each run saves `config.yaml`, `ensemble_<N>.pt`, `ensemble_<N>_diagnostics.json`
-and `ensemble_<N>_validation.npz` under:
+Each task and data combination saves only one checkpoint under:
 
 ```text
-dynamics/robosuite/<task>/<expert-type>_<hdf5-type>__<supplement-type>_<hdf5-type>/seed<seed>/<run-id>/
+dynamics/robosuite/<task>/<expert-type>_<hdf5-type>__<supplement-type>_<hdf5-type>/ensemble_<N>.pt
 ```
 
-The trainer prints the exact checkpoint path. The checkpoint records dataset
-paths, observation order / shapes, environment metadata and source-qualified
-demo IDs. IQ rejects a new Robosuite checkpoint with a different task or
+With the defaults, the Lift checkpoint is
+`dynamics/robosuite/lift/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt`.
+Running the same task and data combination again atomically replaces its prior
+checkpoint. The trainer prints the exact path. The checkpoint itself records
+the resolved config, validation diagnostics, dataset paths, observation order /
+shapes, environment metadata and source-qualified demo IDs. IQ rejects a new
+Robosuite checkpoint with a different task or
 observation order. Use its matching `method.penalty_N` and
 `method.dynamics_ckpt` when enabling `method.uncertainty=true` or
 `method.synthetic_constrain=true` in `train_iq_robosuite.py`. Older checkpoints
