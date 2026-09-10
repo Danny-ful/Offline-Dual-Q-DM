@@ -122,6 +122,30 @@ class RobosuiteDynamicsTrainingTests(unittest.TestCase):
                     with self.assertRaises((ValueError, KeyError, FileNotFoundError)):
                         training._build_dataset(config(root))
 
+    def test_controller_metadata_aliases_are_equivalent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            expert, supplement = write_pair(root)
+            for path, damping_key, limits_key in (
+                    (expert, 'damping', 'damping_limits'),
+                    (supplement, 'damping_ratio', 'damping_ratio_limits')):
+                with h5py.File(path, 'a') as f:
+                    args = json.loads(f['data'].attrs['env_args'])
+                    controller = args['env_kwargs']['controller_configs']
+                    controller['body_parts'] = {'right': {
+                        'type': 'OSC_POSE', damping_key: 1, limits_key: [0, 10]}}
+                    f['data'].attrs['env_args'] = json.dumps(args)
+            _, _, _, _, _, metadata = training._build_dataset(config(root))
+            self.assertEqual(metadata['sources']['expert']['transitions'], 14)
+
+            # A real value difference must still be rejected after key normalization.
+            with h5py.File(supplement, 'a') as f:
+                args = json.loads(f['data'].attrs['env_args'])
+                args['env_kwargs']['controller_configs']['body_parts']['right']['damping_ratio'] = .5
+                f['data'].attrs['env_args'] = json.dumps(args)
+            with self.assertRaisesRegex(ValueError, 'controller_configs'):
+                training._build_dataset(config(root))
+
     def test_cpu_training_artifacts_and_iq_loading_for_both_tasks(self):
         with tempfile.TemporaryDirectory(prefix='robosuite dynamics ') as directory:
             root = Path(directory)

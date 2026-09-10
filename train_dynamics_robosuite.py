@@ -36,6 +36,26 @@ def _dataset_paths(cfg):
     return paths
 
 
+def _normalize_controller_metadata(value):
+    """Canonicalize controller field names changed across Robosuite releases."""
+    if isinstance(value, list):
+        return [_normalize_controller_metadata(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    aliases = {
+        'damping': 'damping_ratio',
+        'damping_limits': 'damping_ratio_limits',
+    }
+    normalized = {}
+    for key, item in value.items():
+        key = aliases.get(key, key)
+        item = _normalize_controller_metadata(item)
+        if key in normalized and normalized[key] != item:
+            raise ValueError(f'Conflicting controller metadata values for {key}')
+        normalized[key] = item
+    return normalized
+
+
 def _check_env_metadata(paths, task):
     metadata = {}
     expected = {'lift': 'Lift', 'can': 'PickPlaceCan'}[task]
@@ -58,6 +78,9 @@ def _check_env_metadata(paths, task):
             if key in ('robots', 'gripper_types', 'base_types'):
                 left = left if isinstance(left, list) else [left]
                 right = right if isinstance(right, list) else [right]
+            elif key == 'controller_configs':
+                left = _normalize_controller_metadata(left)
+                right = _normalize_controller_metadata(right)
             if left != right:
                 raise ValueError(f'Expert/supplement environment metadata mismatch for {key}: {left!r} != {right!r}')
     return metadata
