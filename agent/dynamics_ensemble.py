@@ -7,7 +7,6 @@ with learnable per-dimension log_std bounds (MOPO-style).
 
 from __future__ import annotations
 
-import math
 from typing import List, Optional
 
 import torch
@@ -46,9 +45,29 @@ class ProbDynamics(nn.Module):
         # learnable per-dim log_std bounds (MOPO trick keeps log_std within a range)
         self.max_log_std = nn.Parameter(torch.full((obs_dim,), log_std_max))
         self.min_log_std = nn.Parameter(torch.full((obs_dim,), log_std_min))
+        # Identity defaults preserve the behavior of unnormalized/legacy models.
+        for name, dim in (("obs", obs_dim), ("action", action_dim), ("delta", obs_dim)):
+            self.register_buffer(name + "_mean", torch.zeros(dim))
+            self.register_buffer(name + "_std", torch.ones(dim))
+
+    @torch.no_grad()
+    def fit_normalization(self, obs, action, next_obs, eps: float = 1e-6) -> None:
+        """Fit once using the training split, before member bootstrapping."""
+        if eps <= 0 or not torch.isfinite(torch.tensor(eps)):
+            raise ValueError("Normalization eps must be finite and positive")
+        for name, values in (("obs", obs), ("action", action), ("delta", next_obs - obs)):
+            if len(values) == 0 or not torch.isfinite(values).all():
+                raise ValueError("Normalization requires nonempty, finite training data")
+            mean = values.mean(dim=0)
+            std = values.std(dim=0, unbiased=False)
+            # Constant features should not amplify tiny numerical perturbations.
+            std = torch.where(std < eps, torch.ones_like(std), std)
+            getattr(self, name + "_mean").copy_(mean)
+            getattr(self, name + "_std").copy_(std)
 
     def _forward_raw(self, obs: torch.Tensor, action: torch.Tensor):
-        x = torch.cat([obs, action], dim=-1)
+        x = torch.cat([(obs - self.obs_mean) / self.obs_std,
+                       (action - self.action_mean) / self.action_std], dim=-1)
         mean, log_std = self.trunk(x).chunk(2, dim=-1)
         # soft-bound log_std to [min_log_std, max_log_std]
         log_std = self.max_log_std - F.softplus(self.max_log_std - log_std)
@@ -56,23 +75,26 @@ class ProbDynamics(nn.Module):
         return mean, log_std
 
     def forward(self, obs: torch.Tensor, action: torch.Tensor):
-        """Return (mean_delta, log_std_delta)."""
-        return self._forward_raw(obs, action)
+        """Return (mean_delta, log_std_delta) in original observation units."""
+        mean, log_std = self._forward_raw(obs, action)
+        return mean * self.delta_std + self.delta_mean, log_std + self.delta_std.log()
+
+    def nll_per_sample(self, obs, action, next_obs):
+        """Normalized Gaussian NLL (twice NLL, omitting the constant), no regularizer."""
+        mean, log_std = self._forward_raw(obs, action)
+        target_delta = (next_obs - obs - self.delta_mean) / self.delta_std
+        return (((mean - target_delta) ** 2) * torch.exp(-2.0 * log_std)
+                + 2.0 * log_std).sum(dim=-1)
 
     def nll_loss(self, obs: torch.Tensor, action: torch.Tensor, next_obs: torch.Tensor) -> torch.Tensor:
-        mean, log_std = self._forward_raw(obs, action)
-        target_delta = next_obs - obs
-        inv_var = torch.exp(-2.0 * log_std)
-        # Gaussian NLL (up to constants). Sum over obs dim, mean over batch.
-        nll = ((mean - target_delta) ** 2) * inv_var + 2.0 * log_std
-        loss = nll.sum(dim=-1).mean()
+        loss = self.nll_per_sample(obs, action, next_obs).mean()
         # small regularizer to keep the learned bounds from drifting apart too much
         reg = 0.01 * (self.max_log_std.sum() - self.min_log_std.sum())
         return loss + reg
 
     @torch.no_grad()
     def sample_next(self, obs: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        mean, log_std = self._forward_raw(obs, action)
+        mean, log_std = self(obs, action)
         eps = torch.randn_like(mean)
         delta = mean + torch.exp(log_std) * eps
         return obs + delta
@@ -96,6 +118,8 @@ class DynamicsEnsemble(nn.Module):
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.N = N
+        self.hidden_dim = hidden_dim
+        self.hidden_depth = hidden_depth
         # When set, the model only operates on the first effective_obs_dim dims
         # and pads the rest with zeros on output.
         self.effective_obs_dim = effective_obs_dim or obs_dim
@@ -162,15 +186,19 @@ class DynamicsEnsemble(nn.Module):
             out[:, i] = s_next_full
         return out
 
-    def save(self, path: str) -> None:
+    def save(self, path: str, training_metadata: Optional[dict] = None) -> None:
         payload = {
+            "format_version": 2,
             "state_dict": self.state_dict(),
             "cfg": {
                 "obs_dim": self.obs_dim,
                 "action_dim": self.action_dim,
                 "N": self.N,
                 "effective_obs_dim": self.effective_obs_dim,
+                "hidden_dim": self.hidden_dim,
+                "hidden_depth": self.hidden_depth,
             },
+            "training_metadata": training_metadata or {},
         }
         torch.save(payload, path)
 
@@ -189,10 +217,23 @@ class DynamicsEnsemble(nn.Module):
                 assert ckpt_eff == self.effective_obs_dim, (
                     f"effective_obs_dim mismatch: ckpt={ckpt_eff} vs module={self.effective_obs_dim}"
                 )
-            self.load_state_dict(payload["state_dict"])
+            state_dict = payload["state_dict"]
         else:
             # backward compat: raw state dict
-            self.load_state_dict(payload)
+            state_dict = payload
+        normalization_keys = [f"members.{i}.{name}_{stat}" for i in range(self.N)
+                              for name in ("obs", "action", "delta")
+                              for stat in ("mean", "std")]
+        # Only genuinely old checkpoints may omit all normalization buffers.
+        # A partially missing set in a new checkpoint is an error, not an identity fallback.
+        if not any(key in state_dict for key in normalization_keys) and (
+                not isinstance(payload, dict) or payload.get("format_version", 1) < 2):
+            state_dict = dict(state_dict)
+            defaults = self.state_dict()
+            for key in normalization_keys:
+                state_dict[key] = (torch.ones_like(defaults[key]) if key.endswith("_std")
+                                   else torch.zeros_like(defaults[key]))
+        self.load_state_dict(state_dict)
 
 
 def load_iq_dynamics(agent, obs_dim, action_dim):

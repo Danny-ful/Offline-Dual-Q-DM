@@ -74,7 +74,9 @@ dyn:
   weight_decay: 1e-5
   hidden_dim: 256
   hidden_depth: 3
-  val_frac: 0.05
+  val_frac: 0.05  # Fraction of whole trajectories per source (singletons stay in train)
+  normalization_eps: 1e-6
+  diagnostic_bins: 10
   log_interval: 5
 
 defaults:

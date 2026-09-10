@@ -113,6 +113,7 @@ def split_dataset_into_trajectories(
     dataset: Dict[str, np.ndarray],
     timeout_as_done: bool = False,
 ) -> Dict[str, list]:
+    """Keep supplied next states; infer missing ones only within an episode."""
     observations = dataset["observations"]
     actions = dataset["actions"]
     rewards = dataset["rewards"]
@@ -124,8 +125,6 @@ def split_dataset_into_trajectories(
         timeouts = timeouts.astype(bool)
 
     next_observations = dataset.get("next_observations")
-    if next_observations is None:
-        next_observations = np.concatenate([observations[1:], observations[-1:]], axis=0)
 
     trajs = defaultdict(list)
     current = {
@@ -140,13 +139,23 @@ def split_dataset_into_trajectories(
         done = bool(terminals[idx] or (timeout_as_done and timeouts[idx]))
         end_of_trajectory = bool(terminals[idx] or timeouts[idx])
 
-        current["states"].append(observations[idx])
-        current["next_states"].append(next_observations[idx])
-        current["actions"].append(actions[idx])
-        current["rewards"].append(rewards[idx])
-        current["dones"].append(float(done))
+        # A shifted observation is valid only before an episode boundary and
+        # before the last row. Never use a reset state or invent a self-loop.
+        if next_observations is not None or (
+            not end_of_trajectory and idx + 1 < len(observations)
+        ):
+            next_state = (
+                next_observations[idx]
+                if next_observations is not None
+                else observations[idx + 1]
+            )
+            current["states"].append(observations[idx])
+            current["next_states"].append(next_state)
+            current["actions"].append(actions[idx])
+            current["rewards"].append(rewards[idx])
+            current["dones"].append(float(done))
 
-        if end_of_trajectory:
+        if end_of_trajectory and current["states"]:
             trajs["states"].append(np.asarray(current["states"], dtype=np.float32))
             trajs["next_states"].append(np.asarray(current["next_states"], dtype=np.float32))
             trajs["actions"].append(np.asarray(current["actions"], dtype=np.float32))

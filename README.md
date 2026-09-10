@@ -168,6 +168,42 @@ Run CPU regression tests (PyTorch, torchvision and NumPy required):
 python -m unittest discover -s tests -v
 ```
 
+## Offline dynamics training
+
+```bash
+python train_dynamics.py env=hopper method=iq method.penalty_N=5 \
+  env.expert_path=experts/hopper.pkl \
+  env.supplement_path=supplement/hopper_noisy_expert.pkl \
+  env.demo=hopper_noisy_expert.pkl dyn.epochs=150 dyn.val_frac=0.05
+```
+
+The trainer preserves the trajectory boundaries selected by `ExpertDataset`,
+including timeout boundaries that are absent from terminal flags. It holds out
+`dyn.val_frac` of whole trajectories separately within expert and supplement
+data. A source with only one selected trajectory stays entirely in training;
+its validation metrics are explicitly unavailable. If neither source can supply
+a holdout trajectory, increase the number of trajectories or explicitly disable
+validation with `dyn.val_frac=0` (which saves final weights without best selection).
+
+Observation, action and delta-state statistics are fitted on training transitions
+only. Each member gets one fixed bootstrap resample, shuffled each epoch. Every
+epoch is validated using normalized Gaussian NLL without the bound regularizer;
+each member's lowest-NLL weights are restored independently before saving.
+Normalization buffers and architecture are saved in the checkpoint. Inference,
+including stochastic sampling for IQ, returns original observation units.
+Old checkpoints load with identity normalization; retrain to get the new behavior.
+
+Outputs are `dynamics/<demo-stem>/ensemble_<N>.pt`,
+`ensemble_<N>_diagnostics.json` and `ensemble_<N>_validation.npz`. The JSON contains
+training history, selected epochs, split IDs, and aggregate, per-source and
+per-trajectory one-step validation metrics. MSE measures the ensemble mean error;
+disagreement measures variance across deterministic member means (`unbiased=False`).
+Aleatoric variance is reported separately. Error–disagreement Pearson/Spearman
+correlations and quantile bins use training-delta-normalized units; undefined
+correlations are `null`. NPZ stores split transition indices and per-transition
+metrics for plotting. These diagnostics use the same holdout as model selection,
+so they are not an independent test-set or multi-step rollout evaluation.
+
 ## One-step synthetic Bellman constraint
 
 Enable `method.synthetic_constrain=True` with `method.constrain=True` to add an

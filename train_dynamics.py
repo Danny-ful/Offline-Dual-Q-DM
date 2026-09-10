@@ -1,209 +1,321 @@
-"""Offline training of an N-member probabilistic dynamics ensemble.
+"""Train normalized dynamics with fixed member bootstraps and trajectory holdout.
 
-The ensemble is trained once on the full offline dataset (expert + supplement)
-and saved to disk. During IQ training the checkpoint is simply loaded and
-frozen (see `train_iq.py`).
-
-Usage:
-    python train_dynamics.py env=hopper method=iq method.penalty_N=5 \
-        dyn.epochs=100 dyn.lr=1e-3 dyn.batch_size=256
-
-Notes:
-    * Reuses the same expert / supplement loading logic as ``train_iq.py`` so
-      the produced checkpoint is perfectly aligned with the IQ training data.
-    * Each ensemble member is trained with an independent bootstrap resample
-      of the full dataset.
+Uses the same ExpertDataset selection/subsampling as IQ, retaining trajectory IDs.
+Public model predictions and samples remain in original observation units.
 """
-
 from __future__ import annotations
 
+import json
 import os
 import random
 import time
-from typing import List, Tuple
+import warnings
 
 import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader, TensorDataset
 
-from agent.dynamics_ensemble import DynamicsEnsemble
-from dataset.memory import Memory
-from make_envs import make_env
+from dataset.expert_dataset import ExpertDataset
 
 
-def _collect_transitions(memory: Memory) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Flatten a Memory buffer into (obs, action, next_obs) arrays."""
-    obs_list: List[np.ndarray] = []
-    next_obs_list: List[np.ndarray] = []
-    action_list: List[np.ndarray] = []
-    for item in memory.buffer:
-        state, next_state, action, _reward, _done = item
-        obs_list.append(np.asarray(state, dtype=np.float32))
-        next_obs_list.append(np.asarray(next_state, dtype=np.float32))
-        action_list.append(np.asarray(action, dtype=np.float32))
-    obs = np.stack(obs_list, axis=0)
-    next_obs = np.stack(next_obs_list, axis=0)
-    actions = np.stack(action_list, axis=0)
+def _build_dataset(cfg: DictConfig, seed: int):
+    """Keep source-qualified trajectory IDs; terminal flags may omit timeouts."""
+    if int(cfg.expert.demos) < 1 or int(cfg.expert.subsample_freq) < 1:
+        raise ValueError("expert.demos and expert.subsample_freq must be positive")
+    arrays = [[], [], []]
+    trajectory_ids, sources = [], []
+    for source, path, demos, offset in (
+        ("expert", cfg.env.expert_path, cfg.expert.demos, 42),
+        ("supplement", cfg.env.supplement_path, np.iinfo(np.int32).max, 43),
+    ):
+        path = hydra.utils.to_absolute_path(path)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"{source} dataset not found at {path}")
+        data = ExpertDataset(path, demos, cfg.expert.subsample_freq, seed + offset)
+        if not len(data):
+            raise ValueError(f"{source} dataset has no transitions after subsampling")
+        for index in range(len(data)):
+            obs, next_obs, action, _, _ = data[index]
+            for target, value in zip(arrays, (obs, action, next_obs)):
+                target.append(np.asarray(value, dtype=np.float32))
+            trajectory_ids.append(f"{source}:{data.get_idx[index][0]}")
+            sources.append(source)
+        print(f"--> {source}: {len(data)} transitions")
+    obs, actions, next_obs = (np.stack(values) for values in arrays)
     if actions.ndim == 1:
         actions = actions[:, None]
-    return obs, actions, next_obs
+    if obs.ndim != 2 or next_obs.shape != obs.shape or actions.ndim != 2:
+        raise ValueError("Dynamics requires flat observations and actions with matching next observations")
+    if not all(np.isfinite(values).all() for values in (obs, actions, next_obs)):
+        raise ValueError("Dynamics data contains NaN or infinity")
+    return obs, actions, next_obs, np.asarray(trajectory_ids), np.asarray(sources)
 
 
-def _build_dataset(cfg: DictConfig, seed: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    REPLAY_MEMORY = int(cfg.env.replay_mem)
+def _split_trajectories(trajectory_ids, sources, val_frac, seed):
+    """Hold out whole trajectories per source, retaining singletons for training.
 
-    expert_path = hydra.utils.to_absolute_path(cfg.env.expert_path)
-    supplement_path = hydra.utils.to_absolute_path(cfg.env.supplement_path)
+    val_frac is a fraction of trajectories, so transition fractions may differ.
+    """
+    if not 0 <= val_frac < 1:
+        raise ValueError("dyn.val_frac must be in [0, 1)")
+    if len(trajectory_ids) == 0 or len(trajectory_ids) != len(sources):
+        raise ValueError("Need nonempty, aligned trajectory IDs and sources")
+    rng = np.random.default_rng(seed)
+    held_out = []
+    if val_frac > 0:
+        for source in np.unique(sources):
+            ids = np.unique(trajectory_ids[sources == source])
+            if len(ids) < 2:
+                warnings.warn(f"{source} has only one trajectory; retained in training, no holdout for this source")
+                continue
+            count = min(len(ids) - 1, max(1, int(len(ids) * val_frac)))
+            held_out.extend(rng.permutation(ids)[:count].tolist())
+        if not held_out:
+            raise ValueError("Trajectory validation needs at least two trajectories in one source; "
+                             "load more trajectories or explicitly set dyn.val_frac=0")
+    mask = np.isin(trajectory_ids, held_out)
+    return np.flatnonzero(~mask), np.flatnonzero(mask)
 
-    if not os.path.isfile(expert_path):
-        raise FileNotFoundError(f"Expert dataset not found at {expert_path}")
-    if not os.path.isfile(supplement_path):
-        raise FileNotFoundError(f"Supplement dataset not found at {supplement_path}")
 
-    expert_memory = Memory(REPLAY_MEMORY // 2, seed)
-    expert_memory.load(
-        expert_path,
-        num_trajs=cfg.expert.demos,
-        sample_freq=cfg.expert.subsample_freq,
-        seed=seed + 42,
-    )
-    print(f"--> Expert memory size: {expert_memory.size()}")
+def _fixed_bootstrap(train_idx, members, seed):
+    """Draw once. Epochs may permute these indices but never redraw them."""
+    generator = torch.Generator(device=train_idx.device).manual_seed(seed)
+    return [train_idx[torch.randint(len(train_idx), (len(train_idx),),
+                                   generator=generator, device=train_idx.device)]
+            for _ in range(members)]
 
-    supplement_memory = Memory(REPLAY_MEMORY // 2, seed + 1)
-    supplement_memory.load(
-        supplement_path,
-        num_trajs=np.iinfo(np.int32).max,
-        sample_freq=cfg.expert.subsample_freq,
-        seed=seed + 43,
-    )
-    print(f"--> Supplement memory size: {supplement_memory.size()}")
 
-    e_obs, e_act, e_next = _collect_transitions(expert_memory)
-    s_obs, s_act, s_next = _collect_transitions(supplement_memory)
+@torch.no_grad()
+def _validation_losses(ensemble, obs, actions, next_obs, indices, batch_size):
+    totals = np.zeros(ensemble.N, dtype=np.float64)
+    ensemble.eval()
+    for start in range(0, len(indices), batch_size):
+        idx = indices[start:start + batch_size]
+        for i, member in enumerate(ensemble.members):
+            totals[i] += member.nll_per_sample(obs[idx], actions[idx], next_obs[idx]).double().sum().item()
+    losses = totals / len(indices)
+    if not np.isfinite(losses).all():
+        raise FloatingPointError("Nonfinite validation NLL")
+    return losses
 
-    obs = np.concatenate([e_obs, s_obs], axis=0)
-    actions = np.concatenate([e_act, s_act], axis=0)
-    next_obs = np.concatenate([e_next, s_next], axis=0)
-    print(f"--> Total transitions for dynamics training: {obs.shape[0]}")
-    return obs, actions, next_obs
+
+def _train_ensemble(ensemble, obs, actions, next_obs, train_idx, val_idx, dyn_cfg, seed):
+    epochs = int(dyn_cfg.get("epochs", 100))
+    batch_size = int(dyn_cfg.get("batch_size", 256))
+    log_interval = int(dyn_cfg.get("log_interval", 5))
+    if min(epochs, batch_size, log_interval) < 1 or len(train_idx) == 0:
+        raise ValueError("epochs, batch_size, log_interval and training size must be positive")
+    eps = float(dyn_cfg.get("normalization_eps", 1e-6))
+    # Shared training statistics, independent resamples and optimization per member.
+    ensemble.members[0].fit_normalization(obs[train_idx], actions[train_idx], next_obs[train_idx], eps)
+    for member in ensemble.members[1:]:
+        for name, value in ensemble.members[0].named_buffers():
+            getattr(member, name).copy_(value)
+    optimizers = [torch.optim.Adam(member.parameters(), lr=float(dyn_cfg.get("lr", 1e-3)),
+                                  weight_decay=float(dyn_cfg.get("weight_decay", 1e-5)))
+                  for member in ensemble.members]
+    bootstrap_seed = int(seed) + 1000
+    bootstraps = _fixed_bootstrap(train_idx, ensemble.N, bootstrap_seed)
+    shuffle_rng = torch.Generator(device=train_idx.device).manual_seed(int(seed) + 1001)
+    best_losses = np.full(ensemble.N, np.inf)
+    best_epochs = [None] * ensemble.N
+    best_states = [None] * ensemble.N
+    history = []
+    start_time = time.time()
+    for epoch in range(1, epochs + 1):
+        member_losses = []
+        for member, opt, bootstrap in zip(ensemble.members, optimizers, bootstraps):
+            member.train()
+            idx = bootstrap[torch.randperm(len(bootstrap), device=train_idx.device, generator=shuffle_rng)]
+            total = 0.0
+            for start in range(0, len(idx), batch_size):
+                batch = idx[start:start + batch_size]
+                loss = member.nll_loss(obs[batch], actions[batch], next_obs[batch])
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(f"Nonfinite training loss at epoch {epoch}")
+                opt.zero_grad()
+                loss.backward()
+                opt.step()
+                total += loss.item() * len(batch)
+            member_losses.append(total / len(idx))
+        val_losses = None
+        if len(val_idx):
+            # Evaluate every epoch regardless of console log frequency; exclude bound regularizer.
+            val_losses = _validation_losses(ensemble, obs, actions, next_obs, val_idx, batch_size)
+            for i, loss in enumerate(val_losses):
+                if loss < best_losses[i]:
+                    best_losses[i] = loss
+                    best_epochs[i] = epoch
+                    best_states[i] = {key: value.detach().cpu().clone()
+                                      for key, value in ensemble.members[i].state_dict().items()}
+        history.append({"epoch": epoch, "train_loss": member_losses,
+                        "val_nll": None if val_losses is None else val_losses.tolist()})
+        if epoch % log_interval == 0 or epoch == epochs:
+            val_line = "" if val_losses is None else f" | val NLL={val_losses.round(4).tolist()}"
+            print(f"[dynamics] epoch {epoch}/{epochs} train mean={np.mean(member_losses):.4f}"
+                  f"{val_line} | elapsed {time.time() - start_time:.1f}s")
+    if len(val_idx):
+        for member, state in zip(ensemble.members, best_states):
+            member.load_state_dict(state)
+        print(f"--> Restored member best epochs: {best_epochs}")
+    else:
+        warnings.warn("Validation disabled: saving last-epoch weights; no best-weight selection or holdout diagnostics")
+    ensemble.eval()
+    return {"seed": int(seed), "bootstrap_seed": bootstrap_seed,
+            "bootstrap_unique_counts": [int(torch.unique(idx).numel()) for idx in bootstraps],
+            "selection_metric": "normalized_nll_without_regularizer" if len(val_idx) else None,
+            "best_epochs": best_epochs,
+            "best_val_nll": best_losses.tolist() if len(val_idx) else None,
+            "history": history}
+
+
+def _correlation(x, y):
+    if len(x) < 2 or np.std(x) == 0 or np.std(y) == 0:
+        return None
+    return float(np.clip(np.corrcoef(x, y)[0, 1], -1, 1))
+
+
+def _ranks(values):
+    # Average ranks for ties (including constant disagreement from a single member).
+    _, inverse, counts = np.unique(values, return_inverse=True, return_counts=True)
+    return (np.cumsum(counts) - (counts + 1) / 2.0)[inverse]
+
+
+def _metric_summary(metrics, mask, bins):
+    result = {"transitions": int(mask.sum())}
+    for name, values in metrics.items():
+        if name == "member_nll":
+            result[name] = values[mask].mean(axis=0).tolist()
+        else:
+            result[name] = float(values[mask].mean())
+    error, disagreement = metrics["normalized_mse"][mask], metrics["normalized_disagreement"][mask]
+    result["error_disagreement_pearson"] = _correlation(error, disagreement)
+    result["error_disagreement_spearman"] = _correlation(_ranks(error), _ranks(disagreement))
+    # Quantile edges keep tied disagreements together instead of inventing an ordering.
+    edges = np.unique(np.quantile(disagreement, np.linspace(0, 1, bins + 1)))
+    groups = np.searchsorted(edges[1:-1], disagreement, side="right")
+    result["disagreement_bins"] = []
+    for group in np.unique(groups):
+        selected = groups == group
+        result["disagreement_bins"].append({
+            "count": int(selected.sum()), "min": float(disagreement[selected].min()),
+            "max": float(disagreement[selected].max()),
+            "mean_disagreement": float(disagreement[selected].mean()),
+            "mean_error": float(error[selected].mean()),
+        })
+    return result
+
+
+@torch.no_grad()
+def _diagnostics(ensemble, obs, actions, next_obs, val_idx, trajectory_ids, sources, batch_size, bins=10):
+    """One-step holdout error vs variance of deterministic member means.
+
+    Aleatoric variance is separate; random samples never enter disagreement.
+    Normalized metrics use the training delta scale so features are comparable.
+    """
+    if batch_size < 1 or bins < 1:
+        raise ValueError("Diagnostic batch size and bins must be positive")
+    if not len(val_idx):
+        return {"status": "disabled", "reason": "dyn.val_frac=0"}, {}
+    ensemble.eval()
+    metrics = {key: [] for key in ("mse", "normalized_mse", "disagreement",
+                                   "normalized_disagreement", "aleatoric_variance", "member_nll")}
+    scale = ensemble.members[0].delta_std
+    for start in range(0, len(val_idx), batch_size):
+        idx = val_idx[start:start + batch_size]
+        outputs = [member(obs[idx], actions[idx]) for member in ensemble.members]
+        means = torch.stack([output[0] for output in outputs])
+        variances = torch.stack([torch.exp(2 * output[1]) for output in outputs])
+        error = means.mean(dim=0) - (next_obs[idx] - obs[idx])
+        disagreement = means.var(dim=0, unbiased=False)
+        batch = {
+            "mse": error.square().mean(dim=-1),
+            "normalized_mse": (error / scale).square().mean(dim=-1),
+            "disagreement": disagreement.mean(dim=-1),
+            "normalized_disagreement": (disagreement / scale.square()).mean(dim=-1),
+            "aleatoric_variance": variances.mean(dim=(0, 2)),
+            "member_nll": torch.stack([member.nll_per_sample(obs[idx], actions[idx], next_obs[idx])
+                                        for member in ensemble.members], dim=-1),
+        }
+        for key, value in batch.items():
+            if not torch.isfinite(value).all():
+                raise FloatingPointError(f"Nonfinite diagnostic: {key}")
+            metrics[key].append(value.cpu().numpy())
+    metrics = {key: np.concatenate(value) for key, value in metrics.items()}
+    ids = trajectory_ids[val_idx.cpu().numpy()]
+    val_sources = sources[val_idx.cpu().numpy()]
+    report = {"status": "ok", "evaluation": "one_step_on_selection_holdout_after_best_member_restore",
+              "overall": _metric_summary(metrics, np.ones(len(ids), dtype=bool), bins),
+              "by_source": {}, "by_trajectory": {}}
+    for source in np.unique(sources):
+        mask = val_sources == source
+        report["by_source"][str(source)] = (_metric_summary(metrics, mask, bins) if mask.any()
+                                            else {"transitions": 0, "status": "no_holdout_trajectories"})
+    for trajectory in np.unique(ids):
+        mask = ids == trajectory
+        report["by_trajectory"][str(trajectory)] = _metric_summary(metrics, mask, bins)
+    report["trajectory_macro_normalized_mse"] = float(np.mean(
+        [row["normalized_mse"] for row in report["by_trajectory"].values()]))
+    return report, dict(metrics, trajectory_ids=ids, sources=val_sources)
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig) -> None:
+    # Delay simulator/agent imports so numerical helpers can be tested on CPU alone.
+    from agent.dynamics_ensemble import DynamicsEnsemble
+    from make_envs import make_env
+
     cfg.device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print(OmegaConf.to_yaml(cfg))
-
     random.seed(cfg.seed)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
-
-    # We only need env to query observation/action dims.
     env = make_env(cfg)
-    obs_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-
-    # For Ant-v2: only the first 27 dims (qpos + qvel) carry information;
-    # the remaining 84 dims (cfrc_ext) are always zero in mujoco 2.1.
-    effective_obs_dim = int(cfg.get("dyn", {}).get("effective_obs_dim", obs_dim))
-
+    try:
+        obs_dim = env.observation_space.shape[0]
+        action_dim = env.action_space.shape[0]
+    finally:
+        env.close()
     dyn_cfg = cfg.get("dyn", {}) or {}
+    effective_obs_dim = int(dyn_cfg.get("effective_obs_dim", obs_dim))
     N = int(getattr(cfg.method, "penalty_N", dyn_cfg.get("N", 5)))
-    epochs = int(dyn_cfg.get("epochs", 100))
-    batch_size = int(dyn_cfg.get("batch_size", 256))
-    lr = float(dyn_cfg.get("lr", 1e-3))
-    weight_decay = float(dyn_cfg.get("weight_decay", 1e-5))
-    hidden_dim = int(dyn_cfg.get("hidden_dim", 256))
-    hidden_depth = int(dyn_cfg.get("hidden_depth", 3))
-    val_frac = float(dyn_cfg.get("val_frac", 0.05))
-    log_interval = int(dyn_cfg.get("log_interval", 5))
-
-    obs, actions, next_obs = _build_dataset(cfg, seed=cfg.seed)
-    # Slice to effective dims for dynamics training
+    if not 1 <= effective_obs_dim <= obs_dim or N < 1:
+        raise ValueError("Invalid effective_obs_dim or ensemble size")
+    obs, actions, next_obs, trajectory_ids, sources = _build_dataset(cfg, cfg.seed)
+    if obs.shape[1] != obs_dim or actions.shape[1] != action_dim:
+        raise ValueError("Dataset observation/action dimensions do not match the environment")
     obs = obs[:, :effective_obs_dim]
     next_obs = next_obs[:, :effective_obs_dim]
-    num_samples = obs.shape[0]
-    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=cfg.device)
-    act_t = torch.as_tensor(actions, dtype=torch.float32, device=cfg.device)
-    next_t = torch.as_tensor(next_obs, dtype=torch.float32, device=cfg.device)
-
-    # Hold-out validation split (same across members; per-member bootstrap on train).
-    perm = torch.randperm(num_samples, device=cfg.device)
-    num_val = max(1, int(num_samples * val_frac)) if val_frac > 0 else 0
-    val_idx = perm[:num_val]
-    train_idx = perm[num_val:]
-    val_obs = obs_t[val_idx]
-    val_act = act_t[val_idx]
-    val_next = next_t[val_idx]
-
-    ensemble = DynamicsEnsemble(
-        obs_dim=obs_dim,
-        action_dim=action_dim,
-        N=N,
-        hidden_dim=hidden_dim,
-        hidden_depth=hidden_depth,
-        effective_obs_dim=effective_obs_dim,
-    ).to(cfg.device)
-
-    # Optimize each member independently.
-    optimizers = [
-        torch.optim.Adam(member.parameters(), lr=lr, weight_decay=weight_decay)
-        for member in ensemble.members
-    ]
-
-    num_train = train_idx.numel()
-    print(f"--> Dataset: train={num_train} val={num_val} | N={N} epochs={epochs} bs={batch_size}")
-
-    start_time = time.time()
-    for epoch in range(epochs):
-        # Per-member bootstrap: independent random index ordering each epoch.
-        member_losses: List[float] = []
-        for i, (member, opt) in enumerate(zip(ensemble.members, optimizers)):
-            member.train()
-            # Bootstrap with replacement across the train split.
-            idx = train_idx[torch.randint(0, num_train, (num_train,), device=cfg.device)]
-            total, count = 0.0, 0
-            for start in range(0, num_train, batch_size):
-                batch_idx = idx[start : start + batch_size]
-                b_obs = obs_t[batch_idx]
-                b_act = act_t[batch_idx]
-                b_next = next_t[batch_idx]
-                loss = member.nll_loss(b_obs, b_act, b_next)
-                opt.zero_grad()
-                loss.backward()
-                opt.step()
-                total += float(loss.item()) * b_obs.size(0)
-                count += b_obs.size(0)
-            member_losses.append(total / max(count, 1))
-
-        if (epoch + 1) % log_interval == 0 or epoch == epochs - 1:
-            val_line = ""
-            if num_val > 0:
-                with torch.no_grad():
-                    val_losses = []
-                    for member in ensemble.members:
-                        member.eval()
-                        val_losses.append(float(member.nll_loss(val_obs, val_act, val_next).item()))
-                val_line = (
-                    f" | val mean={np.mean(val_losses):.4f} "
-                    f"min={np.min(val_losses):.4f} max={np.max(val_losses):.4f}"
-                )
-            elapsed = time.time() - start_time
-            print(
-                f"[dynamics] epoch {epoch + 1:>4d}/{epochs} "
-                f"train mean={np.mean(member_losses):.4f} "
-                f"min={np.min(member_losses):.4f} max={np.max(member_losses):.4f}"
-                f"{val_line} | elapsed {elapsed:.1f}s"
-            )
-
-    # Save checkpoint
+    train_idx, val_idx = _split_trajectories(trajectory_ids, sources, float(dyn_cfg.get("val_frac", .05)), cfg.seed)
+    train_np, val_np = train_idx, val_idx
+    obs_t, act_t, next_t = (torch.as_tensor(array, dtype=torch.float32, device=cfg.device)
+                            for array in (obs, actions, next_obs))
+    train_idx, val_idx = (torch.as_tensor(idx, device=cfg.device) for idx in (train_idx, val_idx))
+    ensemble = DynamicsEnsemble(obs_dim, action_dim, N=N,
+                                hidden_dim=int(dyn_cfg.get("hidden_dim", 256)),
+                                hidden_depth=int(dyn_cfg.get("hidden_depth", 3)),
+                                effective_obs_dim=effective_obs_dim).to(cfg.device)
+    print(f"--> train={len(train_idx)} val={len(val_idx)} transitions | "
+          f"train={len(np.unique(trajectory_ids[train_np]))} val={len(np.unique(trajectory_ids[val_np]))} trajectories")
+    training = _train_ensemble(ensemble, obs_t, act_t, next_t, train_idx, val_idx, dyn_cfg, cfg.seed)
+    diagnostics, samples = _diagnostics(ensemble, obs_t, act_t, next_t, val_idx, trajectory_ids, sources,
+                                        int(dyn_cfg.get("batch_size", 256)), int(dyn_cfg.get("diagnostic_bins", 10)))
+    training["split"] = {"unit": "trajectory", "val_frac": float(dyn_cfg.get("val_frac", .05)),
+                         "train_trajectories": np.unique(trajectory_ids[train_np]).tolist(),
+                         "val_trajectories": np.unique(trajectory_ids[val_np]).tolist()}
+    training["config"] = OmegaConf.to_container(cfg, resolve=True)
     demo_stem = os.path.splitext(os.path.basename(cfg.env.demo))[0]
     save_dir = hydra.utils.to_absolute_path(f"dynamics/{demo_stem}")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"ensemble_{N}.pt")
-    ensemble.save(save_path)
-    print(f"--> Saved ensemble checkpoint to {save_path}")
+    stem = os.path.join(save_dir, f"ensemble_{N}")
+    ensemble.save(stem + ".pt", training_metadata=training)
+    with open(stem + "_diagnostics.json", "w") as stream:
+        json.dump({"training": training, "validation": diagnostics}, stream, indent=2, allow_nan=False)
+    np.savez_compressed(stem + "_validation.npz", train_indices=train_np, val_indices=val_np, **samples)
+    if diagnostics["status"] == "ok":
+        print(f"--> Validation diagnostics: {json.dumps(diagnostics['overall'])}")
+    print(f"--> Saved {stem}.pt, {stem}_diagnostics.json and {stem}_validation.npz")
 
 
 if __name__ == "__main__":
