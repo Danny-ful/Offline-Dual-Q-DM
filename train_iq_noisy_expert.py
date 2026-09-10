@@ -13,6 +13,7 @@ import time
 from collections import deque
 from itertools import count
 import types
+import threading
 
 import hydra
 import numpy as np
@@ -168,7 +169,7 @@ def main(cfg: DictConfig):
         name=args.exp_name or None,
         config=OmegaConf.to_container(args, resolve=True),
         reinit=True,
-        sync_tensorboard=True,
+        sync_tensorboard=False,
     )
 
     # Seed envs
@@ -222,8 +223,14 @@ def main(cfg: DictConfig):
     print(f"--> Supplement memory size: {online_memory_replay.size()}")
 
     # Setup logging
-    ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
-    log_dir = os.path.join(args.log_dir, "noisy_expert")
+    ts_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    log_dir = os.path.join(
+        args.log_dir,
+        "noisy_expert",
+        args.exp_name,
+        f"seed_{args.seed}",
+        f"{ts_str}_pid{os.getpid()}",
+    )
 
     writer = SummaryWriter(log_dir=log_dir)
     print(f'--> Saving logs at: {log_dir}')
@@ -234,22 +241,31 @@ def main(cfg: DictConfig):
                     save_tb=True,
                     agent=args.agent.name)
 
+    # Bind methods once to avoid repeated binding overhead and potential race conditions
+    agent.iq_update = types.MethodType(iq_update, agent)
+    agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
+
+    # Lock for synchronizing tensorboard and wandb logging
+    log_lock = threading.Lock()
 
     for step in tqdm(range(LEARN_STEPS)):
-        agent.iq_update = types.MethodType(iq_update, agent)
-        agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
         losses = agent.iq_update(online_memory_replay,
                                     expert_memory_replay, logger, step)
+
+        # Thread-safe logging to tensorboard and wandb
         if step % 1000 == 0:
-            for key, loss in losses.items():
-                writer.add_scalar(key, loss, global_step=step)
+            with log_lock:
+                for key, loss in losses.items():
+                    writer.add_scalar(key, loss, global_step=step)
 
         if step % args.env.eval_interval == 0:
             eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
                                                     stochastic=args.eval.stochastic)
             returns = np.mean(eval_returns)
-            logger.log('eval/episode_reward', returns, step)
-            logger.dump(step, ty='eval')
+            # Thread-safe logging
+            with log_lock:
+                logger.log('eval/episode_reward', returns, step)
+                logger.dump(step, ty='eval')
 
 
 

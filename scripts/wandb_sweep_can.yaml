@@ -85,7 +85,7 @@ parameters:
   method.penalty_lr:
     values: [1e-3]
 
-  method.penalty:
+  method.penalty_coef:
     values: [0.1, 0.5, 1.0, 2.0]
 
   eval.stochastic:
