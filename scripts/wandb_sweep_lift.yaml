@@ -1,5 +1,5 @@
 program: train_iq_robosuite.py
-name: lift-penalty-grid
+name: robosuite-iq-sweep-lift
 method: grid
 
 metric:
@@ -11,7 +11,6 @@ command:
   - python
   - ${program}
   - project_name=robosuite
-  # Keep the experiment setup identical to run_robosuite_experiments.sh.
   - robosuite.task=lift
   - robosuite.expert_dataset_type=ph
   - robosuite.expert_hdf5_type=low_dim
@@ -20,16 +19,15 @@ command:
   - robosuite.supplement_hdf5_type=low_dim_sparse
   - robosuite.supplement_trajs=null
   - robosuite.use_supplement=true
-  - robosuite.learn_steps=100000
+  - robosuite.learn_steps=800000
   - robosuite.eval_interval=10000
-  - robosuite.eval_episodes=100
+  - robosuite.eval_episodes=10
   - robosuite.eval_on_env=true
   - eval.stochastic=false
   - agent.learn_temp=false
   - method.constrain=true
   - method.synthetic_constrain=False
   - method.synthetic_M=1
-  # Set a dynamics checkpoint matching the HDF5 observation layout before enabling synthetic.
   - method.dynamics_ckpt=dynamics/robosuite/lift/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt
   - ${args_no_hyphens}
 
@@ -40,29 +38,20 @@ parameters:
   method.synthetic_warmup_steps:
     values: [10000]
 
-  # Training configuration. The baseline batch size is included.
   train.batch:
     values: [256]
 
-  # IQ-Learn hyperparameters
   method.alpha:
-    values: [0.5,0.6]
+    values: [0.5, 1.0]
 
   agent.actor_lr:
-    values: [1e-5, 6e-5]
+    values: [1e-4, 6e-5]
 
   agent.critic_lr:
-    values: [1e-4, 5e-5]
+    values: [1e-4, 3e-4]
 
   agent.init_temp:
-    values: [0.1,0.4]
+    values: [0.1, 0.5, 1.0]
 
-  method.synthetic_constrain:
-    values: [True, False]
-
-  method.uncertainty:
-    values: [True, False]
-
-  # Seeds for reproducibility
   seed:
     values: [0]
