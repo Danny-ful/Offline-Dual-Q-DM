@@ -21,7 +21,7 @@ command:
   - robosuite.supplement_trajs=null
   - robosuite.use_supplement=true
   - robosuite.learn_steps=800000
-  - robosuite.eval_interval=5000
+  - robosuite.eval_interval=10000
   - robosuite.eval_episodes=10
   - robosuite.eval_on_env=true
   - eval.stochastic=false
