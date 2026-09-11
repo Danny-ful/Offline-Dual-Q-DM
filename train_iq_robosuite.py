@@ -510,8 +510,7 @@ def main(cfg: DictConfig):
             logger.dump(step, ty='train')
 
         # Evaluation on robosuite environment
-        # Use eval.eval_frequency if specified, otherwise fall back to robosuite.eval_interval
-        eval_frequency = getattr(args.eval, 'eval_frequency', args.robosuite.eval_interval)
+        eval_frequency = args.robosuite.eval_interval
         if step % eval_frequency == 0 and args.robosuite.eval_on_env:
             print(f"\n[Step {step}] Running evaluation on Robosuite...")
 
