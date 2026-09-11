@@ -1,5 +1,5 @@
 program: train_iq_noisy_expert.py
-name: noisy-expert-iq-sweep-walker
+name: medium-expert-iq-sweep-walker2d
 method: grid
 
 metric:
@@ -14,7 +14,7 @@ command:
   - agent=sac
   - offline=True
   - env.expert_path=experts/walker2d.pkl
-  - env.supplement_path=supplement/walker2d_medium_expert-v2.pkl
+  - env.supplement_path=supplement/walker2d_full_replay-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -32,14 +32,14 @@ command:
   - cuda_deterministic=False
   - method.regularize=False
   - actor_expert_offline=True
-  - project_name=Offline-Dual-Q-DM-Noisy-Expert-walker
-  - exp_name=noisy_expert_walker
+  - project_name=Offline-Dual-Q-DM-medium-Expert-walker2d
+  - exp_name=medium_expert_walker2d
   - method.uncertainty=False
   - method.synthetic_constrain=False
   - method.synthetic_M=1
-  - method.penalty_auto=False
+  - method.penalty_auto=True
   - method.penalty_N=5
-  #- method.dynamics_ckpt=dynamics/Walker2d-v2/ensemble_5.pt
+  - method.dynamics_ckpt=dynamics/walker2d_medium_expert-v2/ensemble_5.pt
   - ${args_no_hyphens}
   - q_net._target_=agent.sac_models.DoubleQCritic
   - env.learn_steps=5e5
@@ -56,24 +56,28 @@ parameters:
     values: [0]
 
   left:
-    values: [-1.8]
+    values: [-1.2]
   right:
-    values: [0.8]
+    values: [1.2]
 
+  # 降低温度范围：在offline学习中，过高的温度会导致过度探索
   agent.init_temp:
-    values: [0.07,0.1,0.13,0.16]
+    values: [0.1, 0.15, 0.2]
 
+  # 降低penalty目标：避免对Q值过度约束
   method.penalty_target:
     values: [5]
 
+  # 扩展alpha搜索空间：用于调优divergence系数
   method.alpha:
     values: [0.5]
 
   value_ratio:
     values: [1]
 
+  # 增大actor学习率：之前太小导致actor更新缓慢
   agent.actor_lr:
-    values: [3e-5]
+    values: [1e-4,7e-5,3e-5]
 
   agent.actor_update_frequency:
     values: [1]

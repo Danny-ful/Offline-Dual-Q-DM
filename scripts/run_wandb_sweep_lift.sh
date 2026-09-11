@@ -25,10 +25,8 @@ cd "$PROJECT_ROOT"
 CONDA_PROFILE="/home/ubuntu/laiwenqi/anaconda3/etc/profile.d/conda.sh"
 ALT_CONDA_PROFILE="/home/ubuntu/anaconda3/etc/profile.d/conda.sh"
 if [ -f "$CONDA_PROFILE" ]; then
-  # shellcheck source=/dev/null
   source "$CONDA_PROFILE"
 elif [ -f "$ALT_CONDA_PROFILE" ]; then
-  # shellcheck source=/dev/null
   source "$ALT_CONDA_PROFILE"
 else
   echo "conda.sh not found. Checked:"
@@ -41,7 +39,7 @@ conda activate IQ
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
 
 WANDB_ENTITY="${WANDB_ENTITY:-wenqilaid-nanjing-university}"
-WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM}"
+WANDB_PROJECT="${WANDB_PROJECT:-robosuite}"
 NUM_AGENTS="${NUM_AGENTS:-3}"
 SWEEP_CONFIG="${SWEEP_CONFIG:-scripts/wandb_sweep_lift.yaml}"
 SWEEP_LOG="${SWEEP_LOG:-scripts/sweep_ids_lift.log}"
@@ -82,7 +80,6 @@ STATE_WANDB_PROJECT=""
 STATE_SWEEP_ID=""
 STATE_AGENT_TARGET=""
 if [ -f "$SWEEP_STATE_FILE" ]; then
-  # shellcheck source=/dev/null
   source "$SWEEP_STATE_FILE"
 fi
 
@@ -103,7 +100,6 @@ elif [ "$AUTO_REUSE_SWEEP" = "1" ] \
   && [ "${STATE_CONFIG_HASH:-}" = "$CONFIG_HASH" ] \
   && [ "${STATE_WANDB_ENTITY:-}" = "$WANDB_ENTITY" ] \
   && [ "${STATE_WANDB_PROJECT:-}" = "$WANDB_PROJECT" ]; then
-  # Verify the sweep is still running before reusing (via Python API)
   SWEEP_ALIVE="$(python3 -c "
 import wandb
 try:
@@ -156,13 +152,10 @@ else
   fi
   echo "$SWEEP_OUT"
 
-  # Strip ANSI escape sequences before parsing in case wandb colors output.
   SWEEP_OUT_CLEAN="$(printf '%s\n' "$SWEEP_OUT" | sed -E 's/\x1B\[[0-9;]*[A-Za-z]//g')"
 
-  # Prefer parsing the explicit sweep-id line first.
   SWEEP_ID="$(printf '%s\n' "$SWEEP_OUT_CLEAN" | sed -n 's/.*Creating sweep with ID: \([A-Za-z0-9_-]\+\).*/\1/p' | tail -n 1)"
 
-  # Fallback: parse full agent path and extract trailing id.
   if [ -z "$SWEEP_ID" ]; then
     AGENT_PATH="$(printf '%s\n' "$SWEEP_OUT_CLEAN" | sed -n 's/.*wandb agent \(.*\)$/\1/p' | tail -n 1)"
     if [ -n "$AGENT_PATH" ]; then
@@ -210,9 +203,11 @@ echo "Recorded sweep state to: $SWEEP_STATE_FILE"
 echo "Launching ${NUM_AGENTS} agent(s)..."
 
 i=1
-while [ "$i" -le "$NUM_AGENTS" ]; then
+while [ "$i" -le "$NUM_AGENTS" ]
+do
   wandb agent "$AGENT_TARGET" &
-  if [ "$i" -lt "$NUM_AGENTS" ]; then
+  if [ "$i" -lt "$NUM_AGENTS" ]
+  then
     sleep "$AGENT_LAUNCH_STAGGER_SECONDS"
   fi
   i=$((i + 1))

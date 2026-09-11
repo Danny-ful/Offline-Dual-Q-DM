@@ -47,9 +47,6 @@ def main(cfg: DictConfig):
                sync_tensorboard=False,
                reinit=True,
                config=OmegaConf.to_container(args, resolve=False))
-    wandb.define_metric("learn_steps")
-    wandb.define_metric("train/*", step_metric="learn_steps")
-    wandb.define_metric("eval/*", step_metric="learn_steps")
 
     # set seeds
     random.seed(args.seed)

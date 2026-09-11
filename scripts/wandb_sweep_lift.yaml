@@ -1,53 +1,37 @@
 program: train_iq_robosuite.py
-name: lift-penalty-false-grid
+name: lift-penalty-grid
 method: grid
 
 metric:
-  name: eval/episode_reward
+  name: eval/success_rate
   goal: maximize
 
 command:
   - ${env}
   - python
   - ${program}
+  - project_name=robosuite
+  # Keep the experiment setup identical to run_robosuite_experiments.sh.
   - robosuite.task=lift
-  - agent=sac
-  - offline=True
   - robosuite.expert_dataset_type=ph
   - robosuite.expert_hdf5_type=low_dim
+  - robosuite.expert_trajs=null
   - robosuite.supplement_dataset_type=mg
   - robosuite.supplement_hdf5_type=low_dim_sparse
   - robosuite.supplement_trajs=null
   - robosuite.use_supplement=true
-  - robosuite.expert_trajs=1
-  - train.batch=256
-  - method.loss=value
-  - method.constrain=True
+  - robosuite.learn_steps=100000
+  - robosuite.eval_interval=5000
+  - robosuite.eval_episodes=100
+  - robosuite.eval_on_env=true
+  - eval.stochastic=false
+  - agent.learn_temp=false
+  - method.constrain=true
   - method.synthetic_constrain=False
   - method.synthetic_M=1
-  - train.use_target=True
-  - train.soft_update=True
-  - agent.critic_lr=3e-4
-  - agent.critic_tau=0.005
-  - num_actor_updates=1
-  - method.grad_pen=False
-  - cliptarget=False
-  - agent.learn_temp=False
-  - schedular=False
-  - cuda_deterministic=False
-  - method.regularize=False
-  - actor_expert_offline=False
-  - project_name=Offline-Dual-Q-DM
-  - exp_name=penalty_false_lift_grid
-  - method.uncertainty=False
-  - method.penalty_auto=True
-  - method.penalty_N=5
   # Set a dynamics checkpoint matching the HDF5 observation layout before enabling synthetic.
-  - method.dynamics_ckpt=
+  - method.dynamics_ckpt=dynamics/robosuite/lift/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt
   - ${args_no_hyphens}
-  - q_net._target_=agent.sac_models.DoubleQCritic
-  - robosuite.learn_steps=100000
-
 
 parameters:
   method.synthetic_coef:
@@ -56,43 +40,29 @@ parameters:
   method.synthetic_warmup_steps:
     values: [10000]
 
-  seed:
-    values: [0]
+  # Training configuration. The baseline batch size is included.
+  train.batch:
+    values: [256]
 
-  left:
-    values: [-1.2, -0.8]
-  right:
-    values: [1.2, 0.8]
-
-  agent.init_temp:
-    values: [0.5, 0.4]
-
-  method.penalty_target:
-    values: [5]
-
+  # IQ-Learn hyperparameters
   method.alpha:
-    values: [0.5]
-
-  value_ratio:
-    values: [1.0, 0.8]
+    values: [0.5,0.6]
 
   agent.actor_lr:
-    values: [6e-5, 3e-5]
+    values: [1e-5, 6e-5]
 
-  agent.actor_update_frequency:
-    values: [1]
+  agent.critic_lr:
+    values: [1e-4, 5e-5]
 
-  method.penalty_lr:
-    values: [1e-3]
+  agent.init_temp:
+    values: [0.1,0.4]
 
-  eval.stochastic:
-    values: [False]
+  method.synthetic_constrain:
+    values: [True, False]
 
-  robosuite.eval_episodes:
-    values: [100]
+  method.uncertainty:
+    values: [True, False]
 
-  method.chi:
-    values: [True]
-
-  # method.div:
-  #   values: [hellinger, kl, kl2, chi, js]
+  # Seeds for reproducibility
+  seed:
+    values: [0]

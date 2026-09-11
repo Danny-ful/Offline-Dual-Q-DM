@@ -207,15 +207,48 @@ echo "Parsed sweep ID: $SWEEP_ID"
 echo "Agent target: $AGENT_TARGET"
 echo "Recorded sweep target to: $SWEEP_LOG"
 echo "Recorded sweep state to: $SWEEP_STATE_FILE"
-echo "Launching ${NUM_AGENTS} agent(s)..."
+echo "Launching ${NUM_AGENTS} agent(s) with timeout protection..."
+
+# Create logs directory for agent output
+mkdir -p "$(dirname "$SWEEP_LOG")/agent_logs"
+
+# Array to store agent PIDs
+declare -a AGENT_PIDS
+
+# Agent timeout: 4 hours per agent (adjust as needed)
+AGENT_TIMEOUT="${AGENT_TIMEOUT:-14400}"
 
 i=1
 while [ "$i" -le "$NUM_AGENTS" ]; do
-  wandb agent "$AGENT_TARGET" &
+  AGENT_LOG="$(dirname "$SWEEP_LOG")/agent_logs/agent_${i}_$(date '+%Y%m%d_%H%M%S').log"
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Launching agent $i of $NUM_AGENTS... (logging to $AGENT_LOG)"
+
+  # Launch agent with timeout and log output
+  timeout "$AGENT_TIMEOUT" wandb agent "$AGENT_TARGET" 2>&1 | tee "$AGENT_LOG" &
+  AGENT_PIDS["$i"]=$!
+
   if [ "$i" -lt "$NUM_AGENTS" ]; then
     sleep "$AGENT_LAUNCH_STAGGER_SECONDS"
   fi
   i=$((i + 1))
 done
 
-wait
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] All agents launched. Waiting for completion..."
+
+# Wait for all agents and collect exit codes
+EXIT_CODE=0
+for i in "${!AGENT_PIDS[@]}"; do
+  PID=${AGENT_PIDS[$i]}
+  wait "$PID" || {
+    CODE=$?
+    if [ $CODE -eq 124 ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Agent $i (PID: $PID) timed out after $AGENT_TIMEOUT seconds"
+    else
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Warning: Agent $i (PID: $PID) exited with code $CODE"
+      EXIT_CODE=$CODE
+    fi
+  }
+done
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] All agents completed"
+exit $EXIT_CODE
