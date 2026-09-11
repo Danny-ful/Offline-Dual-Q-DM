@@ -203,10 +203,7 @@ def evaluate_robosuite(
                     action = agent.choose_action(obs, sample=False)
 
             next_obs, reward, done, info = env.step(action)
-            if 'success' in info:
-                step_success = info.get('success')
-            else:
-                step_success = env._check_success()
+            step_success = info.get('success', False)
             episode_success = bool(episode_success or step_success)
 
             episode_reward += reward
