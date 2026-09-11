@@ -30,7 +30,7 @@ command:
   - method.synthetic_constrain=False
   - method.synthetic_M=1
   # Set a dynamics checkpoint matching the HDF5 observation layout before enabling synthetic.
-  - method.dynamics_ckpt=dynamics/robosuite/can/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt
+  - method.dynamics_ckpt=/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/dynamics/robosuite/can/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt
   - ${args_no_hyphens}
 
 parameters:
