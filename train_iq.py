@@ -4,9 +4,11 @@ Copyright 2022 Div Garg. All rights reserved.
 Example training code for IQ-Learn which minimially modifies `train_rl.py`.
 """
 
+import atexit
 import datetime
 import os
 import random
+import signal
 import time
 from collections import deque
 from itertools import count
@@ -43,11 +45,6 @@ def get_args(cfg: DictConfig):
 @hydra.main(config_path="conf", config_name="config")
 def main(cfg: DictConfig):
     args = get_args(cfg)
-    wandb.init(project=args.project_name,
-               sync_tensorboard=False,
-               reinit=True,
-               config=OmegaConf.to_container(args, resolve=False))
-
     # set seeds
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -61,6 +58,23 @@ def main(cfg: DictConfig):
     env_args = args.env
     env = make_env(args)
     eval_env = make_env(args)
+
+    # Resolve model dimensions before storing the Hydra configuration in W&B.
+    args.agent.obs_dim = env.observation_space.shape[0]
+    if hasattr(env.action_space, "n"):
+        args.agent.action_dim = env.action_space.n
+    else:
+        args.agent.action_dim = env.action_space.shape[0]
+
+    wandb.init(project=args.project_name,
+               sync_tensorboard=False,
+               reinit=True,
+               config=OmegaConf.to_container(args, resolve=True))
+    # Use the real optimizer-update counter as the x-axis for every metric.
+    # Avoid mixing W&B's implicit _step with explicit step= calls.
+    wandb.define_metric("learn_steps")
+    wandb.define_metric("train/*", step_metric="learn_steps")
+    wandb.define_metric("eval/*", step_metric="learn_steps")
 
     # Seed envs
     env.seed(args.seed)
@@ -135,6 +149,26 @@ def main(cfg: DictConfig):
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join(args.log_dir, args.env.name, args.exp_name, ts_str)
     writer = SummaryWriter(log_dir=log_dir)
+    cleanup_done = False
+
+    def close_loggers():
+        nonlocal cleanup_done
+        if cleanup_done:
+            return
+        cleanup_done = True
+        writer.close()
+        if wandb.run is not None:
+            wandb.finish()
+
+    # Preserve buffered TensorBoard/W&B data on normal returns and exceptions.
+    atexit.register(close_loggers)
+
+    def handle_termination(signum, _frame):
+        close_loggers()
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, handle_termination)
+    signal.signal(signal.SIGINT, handle_termination)
     print(f'--> Saving logs at: {log_dir}')
     logger = Logger(args.log_dir,
                     log_frequency=args.log_interval,
@@ -154,6 +188,7 @@ def main(cfg: DictConfig):
     bc_no_improve_evals = 0
 
     learn_steps = 0
+    last_eval_step = -1
     begin_learn = False
     episode_reward = 0
 
@@ -171,16 +206,22 @@ def main(cfg: DictConfig):
         start_time = time.time()
         for episode_step in range(EPISODE_STEPS):
             if data_only:
-                if learn_steps % args.env.eval_interval == 0:
+                if (learn_steps % args.env.eval_interval == 0
+                        and learn_steps != last_eval_step):
+                    last_eval_step = learn_steps
                     eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
                                                             stochastic=args.eval.stochastic)
                     returns = np.mean(eval_returns)
-                    learn_steps += 1  # To prevent repeated eval at timestep 0
-                    logger.log('eval/episode_reward', returns, learn_steps)
-                    logger.log('eval/episode_reward_std', np.std(eval_returns), learn_steps)
-                    logger.log('eval/episode_reward_min', np.min(eval_returns), learn_steps)
-                    logger.log('eval/episode_reward_max', np.max(eval_returns), learn_steps)
-                    logger.log('eval/episode', epoch, learn_steps)
+                    logger.log_metrics({
+                        'eval/episode_reward': returns,
+                        'eval/episode_reward_std': np.std(eval_returns),
+                        'eval/episode_reward_min': np.min(eval_returns),
+                        'eval/episode_reward_max': np.max(eval_returns),
+                        'eval/episode': epoch,
+                    }, learn_steps, log_frequency=1)
+                    # The sweep optimizes the latest evaluation result.
+                    wandb.run.summary["eval/episode_reward"] = float(returns)
+                    logger.dump(learn_steps, ty='eval')
 
                     improved = returns > best_eval_returns
                     improved_for_early_stop = returns > best_eval_returns + bc_early_stop_min_delta
@@ -188,7 +229,7 @@ def main(cfg: DictConfig):
                     if improved:
                         # Store best eval returns
                         best_eval_returns = returns
-                        wandb.run.summary["best_returns"] = best_eval_returns
+                        wandb.run.summary["best_returns"] = float(best_eval_returns)
                         save(agent, epoch, args, output_dir='results_best')
 
                     # if bc_early_stop:
@@ -213,11 +254,11 @@ def main(cfg: DictConfig):
                     #     wandb.finish()
                     #     return
 
-                learn_steps += 1
-                if learn_steps == LEARN_STEPS:
+                if learn_steps >= LEARN_STEPS:
                     print('Finished!')
-                    wandb.finish()
+                    close_loggers()
                     return
+                learn_steps += 1
 
                 if is_bc:
                     # BC update using expert data only.
@@ -236,9 +277,12 @@ def main(cfg: DictConfig):
                                              expert_memory_replay, logger, learn_steps)
 
                 if learn_steps % args.log_interval == 0:
+                    log_values = {}
                     for key, loss in losses.items():
                         writer.add_scalar(key, loss, global_step=learn_steps)
-                        wandb.log({key: loss, "learn_steps": learn_steps}, step=learn_steps)
+                        log_values[key] = loss.item() if isinstance(loss, torch.Tensor) else loss
+                    if log_values:
+                        wandb.log({**log_values, "learn_steps": learn_steps})
                 continue
 
             if steps < args.num_seed_steps:
@@ -251,24 +295,33 @@ def main(cfg: DictConfig):
             episode_reward += reward
             steps += 1
 
-            if learn_steps % args.env.eval_interval == 0:
+            if (learn_steps % args.env.eval_interval == 0
+                    and learn_steps != last_eval_step):
+                last_eval_step = learn_steps
                 eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
                                                         stochastic=args.eval.stochastic)
                 returns = np.mean(eval_returns)
-                learn_steps += 1  # To prevent repeated eval at timestep 0
-                logger.log('eval/episode_reward', returns, learn_steps)
-                logger.log('eval/episode_reward_std', np.std(eval_returns), learn_steps)
-                logger.log('eval/episode_reward_min', np.min(eval_returns), learn_steps)
-                logger.log('eval/episode_reward_max', np.max(eval_returns), learn_steps)
-                logger.log('eval/episode', epoch, learn_steps)
+                logger.log_metrics({
+                    'eval/episode_reward': returns,
+                    'eval/episode_reward_std': np.std(eval_returns),
+                    'eval/episode_reward_min': np.min(eval_returns),
+                    'eval/episode_reward_max': np.max(eval_returns),
+                    'eval/episode': epoch,
+                }, learn_steps, log_frequency=1)
+                wandb.run.summary["eval/episode_reward"] = float(returns)
                 logger.dump(learn_steps, ty='eval')
                 # print('EVAL\tEp {}\tAverage reward: {:.2f}\t'.format(epoch, returns))
 
                 if returns > best_eval_returns:
                     # Store best eval returns
                     best_eval_returns = returns
-                    wandb.run.summary["best_returns"] = best_eval_returns
+                    wandb.run.summary["best_returns"] = float(best_eval_returns)
                     save(agent, epoch, args, output_dir='results_best')
+
+            if learn_steps >= LEARN_STEPS:
+                print('Finished!')
+                close_loggers()
+                return
 
             # only store done true when episode finishes without hitting timelimit (allow infinite bootstrap)
             done_no_lim = done
@@ -283,10 +336,6 @@ def main(cfg: DictConfig):
                     begin_learn = True
 
                 learn_steps += 1
-                if learn_steps == LEARN_STEPS:
-                    print('Finished!')
-                    wandb.finish()
-                    return
 
                 ######
                 # IQ-Learn Modification
@@ -297,9 +346,12 @@ def main(cfg: DictConfig):
                 ######
 
                 if learn_steps % args.log_interval == 0:
+                    log_values = {}
                     for key, loss in losses.items():
                         writer.add_scalar(key, loss, global_step=learn_steps)
-                        wandb.log({key: loss, "learn_steps": learn_steps}, step=learn_steps)
+                        log_values[key] = loss.item() if isinstance(loss, torch.Tensor) else loss
+                    if log_values:
+                        wandb.log({**log_values, "learn_steps": learn_steps})
 
             if done:
                 break

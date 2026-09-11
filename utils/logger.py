@@ -164,6 +164,23 @@ class Logger(object):
         if wandb.run is not None:
             wandb.log({key: value, "learn_steps": step})
 
+    def log_metrics(self, metrics, step, log_frequency=None):
+        """Log related scalar metrics in one W&B history row."""
+        if not self._should_log(step, log_frequency):
+            return
+        values = {}
+        for key, value in metrics.items():
+            assert key.startswith('train') or key.startswith('eval')
+            if isinstance(value, torch.Tensor):
+                value = value.item()
+            values[key] = value
+            if self._sw is not None:
+                self._sw.add_scalar(key, value, step)
+            mg = self._train_mg if key.startswith('train') else self._eval_mg
+            mg.log(key, value, 1)
+        if wandb.run is not None:
+            wandb.log({**values, "learn_steps": step})
+
     def _try_sw_log_video(self, key, frames, step):
         if self._sw is not None:
             frames = torch.from_numpy(np.array(frames))
