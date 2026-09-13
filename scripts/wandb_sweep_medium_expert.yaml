@@ -60,30 +60,26 @@ parameters:
   right:
     values: [1.2,1]
 
-  # 降低温度范围：在offline学习中，过高的温度会导致过度探索
   agent.init_temp:
     values: [0.2]
 
-  # 降低penalty目标：避免对Q值过度约束
   method.penalty_target:
-    values: [5]
+    values: [1, 5]
 
-  # 扩展alpha搜索空间：用于调优divergence系数
   method.alpha:
     values: [0.5]
 
   value_ratio:
     values: [1]
 
-  # 增大actor学习率：之前太小导致actor更新缓慢
   agent.actor_lr:
-    values: [1e-4,9e-5,8e-5]
+    values: [1e-4,3e-5,5e-5]
 
   agent.actor_update_frequency:
     values: [1]
 
   method.penalty_lr:
-    values: [1e-3,2e-3]
+    values: [1e-2,5e-3]
 
   eval.stochastic:
     values: [False]

@@ -25,10 +25,6 @@ command:
   - robosuite.eval_on_env=true
   - eval.stochastic=false
   - agent.learn_temp=false
-  - agent.actor_lr=6e-05
-  - agent.critic_lr=0.0001
-  - agent.init_temp=0.5
-  - method.alpha=0.5
   - seed=0
   - train.batch=256
   - method.synthetic_constrain=true
@@ -36,8 +32,32 @@ command:
   - ${args_no_hyphens}
 
 parameters:
-  method.synthetic_constrain:
-    values: [true]
+  method.synthetic_coef:
+    values: [1.0, 3.0]
 
-  method.uncertainty:
-    values: [true]
+  method.synthetic_warmup_steps:
+    values: [1]
+
+  train.batch:
+    values: [256]
+
+  method.alpha:
+    values: [0.5]
+
+  agent.actor_lr:
+    values: [3e-5]
+
+  agent.critic_lr:
+    values: [1e-4]
+
+  agent.init_temp:
+    values: [0.1, 0.3]
+
+  seed:
+    values: [0]
+
+  method.penalty_coef:
+    values: [0.1, 0.5]
+
+  method.penalty_target:
+    values: [1, 5]
