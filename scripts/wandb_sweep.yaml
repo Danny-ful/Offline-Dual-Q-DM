@@ -14,7 +14,7 @@ command:
   - agent=sac
   - offline=True
   - env.expert_path=experts/hopper.pkl
-  - env.supplement_path=supplement/hopper_full_replay-v2.pkl
+  - env.supplement_path=supplement/hopper_medium_expert-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -35,7 +35,7 @@ command:
   - project_name=Offline-Dual-Q-DM
   - exp_name=hopper_grid
   - method.uncertainty=False
-  - method.penalty_auto=True
+  - method.penalty_auto=False
   - method.penalty_N=5
   - method.dynamics_ckpt=dynamics/hopper_full_replay-v2/ensemble_5.pt
   - ${args_no_hyphens}
@@ -48,9 +48,9 @@ parameters:
     values: [0]
 
   left:
-    values: [-1.2, -0.8]
+    values: [-1.0, -0.8]
   right:
-    values: [1.2, 0.8]
+    values: [1.0, 0.8]
 
   agent.init_temp:
     values: [1.0, 0.8]
@@ -80,7 +80,7 @@ parameters:
     values: [True]
 
   method.synthetic_constrain:
-    values: [False]
+    values: [False, True]
 
   method.synthetic_coef:
     values: [1.0]

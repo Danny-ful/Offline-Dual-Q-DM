@@ -1,5 +1,5 @@
 program: train_iq_noisy_expert.py
-name: medium-expert-iq-sweep-walker2d
+name: walker2d_uncertainty
 method: grid
 
 metric:
@@ -14,7 +14,7 @@ command:
   - agent=sac
   - offline=True
   - env.expert_path=experts/walker2d.pkl
-  - env.supplement_path=supplement/walker2d_full_replay-v2.pkl
+  - env.supplement_path=supplement/walker2d_medium_expert-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -34,10 +34,10 @@ command:
   - actor_expert_offline=True
   - project_name=Offline-Dual-Q-DM-medium-Expert-walker2d
   - exp_name=medium_expert_walker2d
-  - method.uncertainty=False
+  - method.uncertainty=True
   - method.synthetic_constrain=False
   - method.synthetic_M=1
-  - method.penalty_auto=True
+  - method.penalty_auto=False
   - method.penalty_N=5
   - method.dynamics_ckpt=dynamics/walker2d_medium_expert-v2/ensemble_5.pt
   - ${args_no_hyphens}
@@ -50,19 +50,19 @@ parameters:
     values: [0.1]
 
   method.synthetic_warmup_steps:
-    values: [10000]
+    values: [100000]
 
   seed:
     values: [0]
 
   left:
-    values: [-1.2]
+    values: [-1.2,-1]
   right:
-    values: [1.2]
+    values: [1.2,1]
 
   # 降低温度范围：在offline学习中，过高的温度会导致过度探索
   agent.init_temp:
-    values: [0.1, 0.15, 0.2]
+    values: [0.2]
 
   # 降低penalty目标：避免对Q值过度约束
   method.penalty_target:
@@ -77,13 +77,13 @@ parameters:
 
   # 增大actor学习率：之前太小导致actor更新缓慢
   agent.actor_lr:
-    values: [1e-4,7e-5,3e-5]
+    values: [1e-4,9e-5,8e-5]
 
   agent.actor_update_frequency:
     values: [1]
 
   method.penalty_lr:
-    values: [1e-3]
+    values: [1e-3,2e-3]
 
   eval.stochastic:
     values: [False]

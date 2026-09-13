@@ -20,38 +20,40 @@ command:
   - robosuite.supplement_trajs=null
   - robosuite.use_supplement=true
   - robosuite.learn_steps=100000
-  - robosuite.eval_interval=10000
+  - robosuite.eval_interval=5000
   - robosuite.eval_episodes=100
   - robosuite.eval_on_env=true
   - eval.stochastic=false
-  - agent.learn_temp=false
-  - method.constrain=true
-  - method.synthetic_constrain=False
-  - method.synthetic_M=1
-  - method.dynamics_ckpt=dynamics/robosuite/lift/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt
   - ${args_no_hyphens}
 
 parameters:
   method.synthetic_coef:
-    values: [0.1]
+    values: [1.0,3.0,5.0]
 
   method.synthetic_warmup_steps:
     values: [10000]
+
+  method.synthetic_constrain:
+    values: [true]
+
+  method.uncertainty:
+    values: [true]
 
   train.batch:
     values: [256]
 
   method.alpha:
-    values: [0.5, 1.0]
+    values: [0.5]
 
   agent.actor_lr:
-    values: [1e-4, 6e-5]
+    values: [3e-4]
 
   agent.critic_lr:
-    values: [1e-4, 3e-4]
+    values: [3e-4]
 
   agent.init_temp:
-    values: [0.1, 0.5, 1.0]
+    values: [0.1, 0.3]
 
   seed:
     values: [0]
+

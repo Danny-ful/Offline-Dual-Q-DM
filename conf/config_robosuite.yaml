@@ -78,7 +78,6 @@ robosuite:
 eval:
   eps: 10
   stochastic: false
-  eval_frequency: 100  # Evaluation frequency (in steps)
 
 # Training settings
 train:
