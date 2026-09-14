@@ -1,5 +1,5 @@
 program: train_iq_robosuite.py
-name: robosuite-iq-sweep-lift
+name: robosuite_lift_9.14
 method: grid
 
 metric:
@@ -26,14 +26,15 @@ command:
   - eval.stochastic=false
   - method.synthetic_constrain=true
   - method.uncertainty=true
+  - method.dynamics_ckpt=dynamics/robosuite/lift/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt
   - ${args_no_hyphens}
 
 parameters:
   method.synthetic_coef:
-    values: [1.0, 3.0]
+    values: [2.0]
 
   method.synthetic_warmup_steps:
-    values: [1]
+    values: [1, 10000]
 
   train.batch:
     values: [256]
@@ -42,20 +43,20 @@ parameters:
     values: [0.5]
 
   agent.actor_lr:
-    values: [3e-5]
+    values: [3e-5, 6e-5]
 
   agent.critic_lr:
-    values: [1e-4]
+    values: [1e-4, 3e-4]
 
   agent.init_temp:
-    values: [0.1, 0.3]
+    values: [0.5, 0.3]
 
   seed:
     values: [0]
 
   method.penalty_coef:
-    values: [0.1, 0.5]
+    values: [0.5]
 
-    method.penalty_target:
-    values: [1, 5]
+  method.penalty_target:
+    values: [5]
 

@@ -110,7 +110,7 @@ method:
   uncertainty: false
   penalty_auto: true
   penalty_target: 5.0
-  penalty_lr: 0.001
+  penalty_lr: 0.005
   penalty_min: 0.0
   penalty_max: 10000
   penalty_coef: 1.0

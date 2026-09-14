@@ -1,5 +1,5 @@
 program: train_iq_noisy_expert.py
-name: walker2d_uncertainty
+name: halfcheetah_uncertainty_sync
 method: grid
 
 metric:
@@ -10,11 +10,11 @@ command:
   - ${env}
   - python
   - ${program}
-  - env=walker
+  - env=cheetah
   - agent=sac
   - offline=True
-  - env.expert_path=experts/walker2d.pkl
-  - env.supplement_path=supplement/walker2d_medium_expert-v2.pkl
+  - env.expert_path=experts/halfcheetah.pkl
+  - env.supplement_path=supplement/halfcheetah_medium_expert-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -31,15 +31,15 @@ command:
   - schedular=False
   - cuda_deterministic=False
   - method.regularize=False
-  - actor_expert_offline=True
-  - project_name=Offline-Dual-Q-DM-medium-Expert-walker2d
-  - exp_name=medium_expert_walker2d
+  - actor_expert_offline=False
+  - project_name=Offline-Dual-Q-DM-medium-Expert-halfcheetah
+  - exp_name=medium_expert_halfcheetah
   - method.uncertainty=True
-  - method.synthetic_constrain=False
+  - method.synthetic_constrain=True
   - method.synthetic_M=1
-  - method.penalty_auto=False
+  - method.penalty_auto=True
   - method.penalty_N=5
-  - method.dynamics_ckpt=dynamics/walker2d_medium_expert-v2/ensemble_5.pt
+  - method.dynamics_ckpt=dynamics/halfcheetah_medium_expert-v2/ensemble_5.pt
   - ${args_no_hyphens}
   - q_net._target_=agent.sac_models.DoubleQCritic
   - env.learn_steps=5e5
@@ -47,24 +47,24 @@ command:
 
 parameters:
   method.synthetic_coef:
-    values: [0.1]
+    values: [1]
 
   method.synthetic_warmup_steps:
-    values: [100000]
+    values: [100000,1]
 
   seed:
     values: [0]
 
   left:
-    values: [-1.2,-1]
+    values: [-1]
   right:
-    values: [1.2,1]
+    values: [1]
 
   agent.init_temp:
-    values: [0.2]
+    values: [0.5,0.7,0.9,0.3]
 
   method.penalty_target:
-    values: [1, 5]
+    values: [5]
 
   method.alpha:
     values: [0.5]
@@ -73,7 +73,7 @@ parameters:
     values: [1]
 
   agent.actor_lr:
-    values: [1e-4,3e-5,5e-5]
+    values: [1e-4,3e-5,6e-5]
 
   agent.actor_update_frequency:
     values: [1]
