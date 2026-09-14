@@ -32,6 +32,12 @@ fi
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 command -v "$PYTHON_BIN" >/dev/null || { echo "Python not found: $PYTHON_BIN" >&2; exit 1; }
+
+# Refuse silent CPU fallback when the cloud GPU is not ready.
+# shellcheck source=scripts/gpu_preflight.sh
+source scripts/gpu_preflight.sh
+gpu_preflight "$PYTHON_BIN"
+
 read -r -a tasks <<< "${TASKS:-lift can}"
 for task in "${tasks[@]}"; do
   case "$task" in

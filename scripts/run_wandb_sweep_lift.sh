@@ -10,9 +10,6 @@ set -euo pipefail
 #   NUM_AGENTS=3
 #   SWEEP_CONFIG=scripts/wandb_sweep_lift.yaml
 
-WAIT_FOR_MOUNT_SECONDS="${WAIT_FOR_MOUNT_SECONDS:-0}"
-sleep "$WAIT_FOR_MOUNT_SECONDS"
-
 export USER=ubuntu
 export HOME=/home/ubuntu
 PROJECT_ROOT="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
@@ -36,6 +33,11 @@ fi
 conda activate IQ
 
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
+
+# Refuse silent CPU fallback when the cloud GPU is not ready.
+# shellcheck source=scripts/gpu_preflight.sh
+source scripts/gpu_preflight.sh
+gpu_preflight "${PYTHON_BIN:-python}"
 
 WANDB_ENTITY="${WANDB_ENTITY:-wenqilaid-nanjing-university}"
 WANDB_PROJECT="${WANDB_PROJECT:-robosuite}"

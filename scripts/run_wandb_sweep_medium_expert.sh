@@ -14,9 +14,6 @@ set -euo pipefail
 #   SWEEP_STATE_FILE=scripts/.sweep_state_medium_expert.env
 #   AGENT_LAUNCH_STAGGER_SECONDS=1  # delay between agent launches
 
-WAIT_FOR_MOUNT_SECONDS="${WAIT_FOR_MOUNT_SECONDS:-0}"
-sleep "$WAIT_FOR_MOUNT_SECONDS"
-
 export USER=ubuntu
 export HOME=/home/ubuntu
 PROJECT_ROOT="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
@@ -39,6 +36,11 @@ fi
 conda activate IQ
 
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
+
+# Refuse silent CPU fallback when the cloud GPU is not ready.
+# shellcheck source=scripts/gpu_preflight.sh
+source scripts/gpu_preflight.sh
+gpu_preflight "${PYTHON_BIN:-python}"
 
 WANDB_ENTITY="${WANDB_ENTITY:-wenqilaid-nanjing-university}"
 WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM-medium-Expert}"

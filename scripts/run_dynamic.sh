@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- 1) Optional mount wait (for startup scripts) ---
-WAIT_FOR_MOUNT_SECONDS="${WAIT_FOR_MOUNT_SECONDS:-15}"
-sleep "$WAIT_FOR_MOUNT_SECONDS"
-
-# --- 2) Project bootstrap ---
+# --- 1) Project bootstrap ---
 PROJECT_ROOT="${PROJECT_ROOT:-/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM}"
 cd "$PROJECT_ROOT"
 
-# --- 3) Conda initialization ---
+# --- 2) Conda initialization ---
 CONDA_PROFILE="${CONDA_PROFILE:-/home/ubuntu/laiwenqi/anaconda3/etc/profile.d/conda.sh}"
 ALT_CONDA_PROFILE="/home/ubuntu/anaconda3/etc/profile.d/conda.sh"
 if [ -f "$CONDA_PROFILE" ]; then
@@ -34,6 +30,11 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   PYTHON_BIN="python3"
 fi
+
+# --- 3) Refuse silent CPU fallback when the cloud GPU is not ready. ---
+# shellcheck source=scripts/gpu_preflight.sh
+source scripts/gpu_preflight.sh
+gpu_preflight "$PYTHON_BIN"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "No python executable found in PATH"
   exit 1

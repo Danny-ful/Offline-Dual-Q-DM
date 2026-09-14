@@ -36,6 +36,11 @@ conda activate IQ
 # Set up MuJoCo (needed for robosuite)
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
 
+# Refuse silent CPU fallback when the cloud GPU is not ready.
+# shellcheck source=scripts/gpu_preflight.sh
+source scripts/gpu_preflight.sh
+gpu_preflight "${PYTHON_BIN:-python}"
+
 # =====================================================
 # Experiment: Lift task with PH (expert) + MG (supplement)
 # =====================================================
@@ -45,7 +50,7 @@ echo "Expert Dataset: Lift-PH (all trajectories)"
 echo "Supplement Dataset: Lift-MG sparse (all trajectories)"
 echo "=========================================="
 
-python train_iq_robosuite.py \
+"${PYTHON_BIN:-python}" train_iq_robosuite.py \
     robosuite.task=lift \
     robosuite.expert_dataset_type=ph \
     robosuite.expert_hdf5_type=low_dim \
