@@ -22,8 +22,13 @@ gamma: 0.99
 left: -1
 right: 1
 
-# Learning rate scheduler
+# Actor learning-rate scheduler (measured in actor optimizer updates)
+# Deprecated compatibility switch; prefer actor_lr_scheduler.enabled.
 schedular: false
+actor_lr_scheduler:
+  enabled: false
+  final_lr: 3e-6
+  anneal_updates: 300000
 
 # Additional training parameters
 penalty: 10

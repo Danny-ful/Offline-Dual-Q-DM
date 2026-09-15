@@ -28,7 +28,6 @@ command:
   - method.grad_pen=False
   - cliptarget=False
   - agent.learn_temp=False
-  - schedular=False
   - cuda_deterministic=False
   - method.regularize=False
   - actor_expert_offline=False
@@ -74,6 +73,15 @@ parameters:
 
   agent.actor_lr:
     values: [1e-4]
+
+  actor_lr_scheduler.enabled:
+    values: [True]
+
+  actor_lr_scheduler.final_lr:
+    values: [3.0e-6]
+
+  actor_lr_scheduler.anneal_updates:
+    values: [300000]
 
   agent.actor_update_frequency:
     values: [1]

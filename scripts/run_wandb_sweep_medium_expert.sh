@@ -13,6 +13,10 @@ set -euo pipefail
 #   AUTO_REUSE_SWEEP=1           # if config unchanged, reuse last sweep_id
 #   SWEEP_STATE_FILE=scripts/.sweep_state_medium_expert.env
 #   AGENT_LAUNCH_STAGGER_SECONDS=1  # delay between agent launches
+# Actor LR scheduling is configured in scripts/wandb_sweep_medium_expert.yaml:
+#   actor_lr_scheduler.enabled
+#   actor_lr_scheduler.final_lr
+#   actor_lr_scheduler.anneal_updates  # actor optimizer steps, not learn steps
 
 export USER=ubuntu
 export HOME=/home/ubuntu

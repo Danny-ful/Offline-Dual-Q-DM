@@ -11,6 +11,7 @@ The orchestrator `recoil_update` mirrors the layout of `iq_update` in
 """
 import torch
 
+from agent.lr_scheduler import step_actor_lr_scheduler
 from utils.utils import get_concat_samples, soft_update, average_dicts
 
 
@@ -202,8 +203,7 @@ def recoil_update_actor(self, batch, logger, step):
     self.actor_optimizer.zero_grad()
     actor_loss.backward()
     self.actor_optimizer.step()
-    if getattr(self, "she", False):
-        self.scheduler.step()
+    step_actor_lr_scheduler(self.scheduler)
     actor_dict["lr"] = self.actor_optimizer.param_groups[0]["lr"]
     return actor_dict
 

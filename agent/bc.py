@@ -9,6 +9,8 @@ while isolating BC-specific logic here.
 import torch
 import torch.nn.functional as F
 
+from agent.lr_scheduler import step_actor_lr_scheduler
+
 
 def bc_update(self, expert_buffer, logger, step):
     """Single BC optimizer step using only expert data.
@@ -41,8 +43,7 @@ def bc_update(self, expert_buffer, logger, step):
     self.actor_optimizer.zero_grad()
     actor_loss.backward()
     self.actor_optimizer.step()
-    if self.she:
-        self.scheduler.step()
+    step_actor_lr_scheduler(self.scheduler)
 
     logger.log("train/bc_loss", actor_loss, step)
 

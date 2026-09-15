@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.optim import Adam
 import hydra
 
+from agent.lr_scheduler import make_actor_lr_scheduler, step_actor_lr_scheduler
 from utils.utils import soft_update
 
 
@@ -45,13 +46,10 @@ class SAC(object):
         self.actor_optimizer = Adam(self.actor.parameters(),
                                     lr=agent_cfg.actor_lr,
                                     betas=agent_cfg.actor_betas)
-        self.she = args.schedular
-        
-        self.scheduler = torch.optim.lr_scheduler.LinearLR(
+        self.scheduler = make_actor_lr_scheduler(
             self.actor_optimizer,
-            start_factor=1.0,
-            end_factor=(3e-6)/(5e-4),
-            total_iters=300000,
+            args,
+            initial_lr=agent_cfg.actor_lr,
         )
         self.critic_optimizer = Adam(self.critic.parameters(),
                                      lr=agent_cfg.critic_lr,
@@ -165,8 +163,7 @@ class SAC(object):
         # Gradient clipping to prevent exploding gradients
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=1.0)
         self.actor_optimizer.step()
-        if self.she:
-            self.scheduler.step()
+        step_actor_lr_scheduler(self.scheduler)
 
         losses = {}
         if log_this_step:

@@ -12,7 +12,13 @@ right: 1
 penalty: 10
 cliptarget: false
 usereal: false
+# Deprecated compatibility switch; prefer actor_lr_scheduler.enabled.
 schedular: false
+actor_lr_scheduler:
+  enabled: false
+  # Absolute LR reached after anneal_updates actor optimizer steps.
+  final_lr: 3e-6
+  anneal_updates: 300000
 value_ratio: 1
 num_seed_steps: 0 # Don't need seeding for IL (Use 1000 for RL)
 only_expert_states: False

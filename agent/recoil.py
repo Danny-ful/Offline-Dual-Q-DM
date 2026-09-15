@@ -14,6 +14,7 @@ import torch
 from torch.optim import Adam
 import hydra
 
+from agent.lr_scheduler import make_actor_lr_scheduler
 import utils.utils as utils
 
 
@@ -66,14 +67,11 @@ class ReCOIL(object):
             lr=float(method_cfg.value_lr),
         )
 
-        # Mirror SAC's optional linear scheduler so bc/iq hooks that reach into
-        # self.scheduler keep working if anyone composes ReCOIL with them.
-        self.she = args.schedular
-        self.scheduler = torch.optim.lr_scheduler.LinearLR(
+        # Mirror SAC's optional scheduler so shared update hooks behave the same.
+        self.scheduler = make_actor_lr_scheduler(
             self.actor_optimizer,
-            start_factor=1.0,
-            end_factor=(3e-6) / (5e-4),
-            total_iters=300000,
+            args,
+            initial_lr=agent_cfg.actor_lr,
         )
 
         self.train()
