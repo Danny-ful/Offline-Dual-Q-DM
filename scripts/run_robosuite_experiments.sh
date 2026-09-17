@@ -51,6 +51,7 @@ echo "Supplement Dataset: Lift-MG sparse (all trajectories)"
 echo "=========================================="
 
 "${PYTHON_BIN:-python}" train_iq_robosuite.py \
+    project_name=robosuite \
     robosuite.task=lift \
     robosuite.expert_dataset_type=ph \
     robosuite.expert_hdf5_type=low_dim \
@@ -59,14 +60,25 @@ echo "=========================================="
     robosuite.supplement_hdf5_type=low_dim_sparse \
     robosuite.supplement_trajs=null \
     robosuite.use_supplement=true \
-    robosuite.learn_steps=1000000 \
+    robosuite.learn_steps=100000 \
     robosuite.eval_interval=5000 \
-    robosuite.eval_episodes=10 \
-    train.batch=256 \
-    method.alpha=1.0 \
-    project_name=robosuite \
-    exp_name=lift_ph_expert_mg_sparse_supp \
-    seed=0
+    robosuite.eval_episodes=100 \
+    robosuite.eval_on_env=true \
+    eval.stochastic=false \
+    agent.learn_temp=false \
+    method.synthetic_constrain=true \
+    method.uncertainty=true \
+    'method.dynamics_ckpt=/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM/dynamics/robosuite/lift/ph_low_dim__mg_low_dim_sparse/ensemble_5.pt' \
+    agent.actor_lr=3e-05 \
+    agent.critic_lr=0.0001 \
+    agent.init_temp=0.1 \
+    method.alpha=0.5 \
+    method.penalty_coef=0.5 \
+    method.penalty_target=1 \
+    method.synthetic_coef=3 \
+    method.synthetic_warmup_steps=1 \
+    seed=0 \
+    train.batch=256
 
 echo ""
 echo "Training completed!"

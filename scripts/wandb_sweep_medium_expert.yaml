@@ -1,5 +1,5 @@
 program: train_iq_noisy_expert.py
-name: ant_uncertainty_sync
+name: halfcheetah_uncertainty_sync
 method: grid
 
 metric:
@@ -10,11 +10,11 @@ command:
   - ${env}
   - python
   - ${program}
-  - env=ant
+  - env=cheetah
   - agent=sac
   - offline=True
-  - env.expert_path=experts/ant.pkl
-  - env.supplement_path=supplement/ant_medium_expert-v2.pkl
+  - env.expert_path=experts/halfcheetah.pkl
+  - env.supplement_path=supplement/halfcheetah_medium_expert-v2.pkl
   - expert.demos=1
   - expert.subsample_freq=1
   - train.batch=256
@@ -31,25 +31,25 @@ command:
   - cuda_deterministic=False
   - method.regularize=False
   - actor_expert_offline=False
-  - project_name=Offline-Dual-Q-DM-medium-Expert-ant
-  - exp_name=medium_expert_ant
+  - project_name=Offline-Dual-Q-DM-medium-Expert-halfcheetah
+  - exp_name=medium_expert_halfcheetah
   - method.uncertainty=True
   - method.synthetic_constrain=True
   - method.synthetic_M=1
   - method.penalty_auto=True
   - method.penalty_N=5
-  - method.dynamics_ckpt=dynamics/ant_medium_expert-v2/ensemble_5.pt
+  - method.dynamics_ckpt=dynamics/halfcheetah_medium_expert-v2/ensemble_5.pt
   - ${args_no_hyphens}
   - q_net._target_=agent.sac_models.DoubleQCritic
-  - env.learn_steps=5e5
+  - env.learn_steps=8e5
 
 
 parameters:
   method.synthetic_coef:
-    values: [0.1,0.3]
+    values: [1, 3]
 
   method.synthetic_warmup_steps:
-    values: [100000,1]
+    values: [100000,20000]
 
   seed:
     values: [0]
@@ -60,10 +60,10 @@ parameters:
     values: [1]
 
   agent.init_temp:
-    values: [0.55,0.65,0.6]
+    values: [0.9,0.95]
 
   method.penalty_target:
-    values: [5]
+    values: [5,1]
 
   method.alpha:
     values: [0.5]
@@ -75,10 +75,10 @@ parameters:
     values: [1e-4]
 
   actor_lr_scheduler.enabled:
-    values: [True]
+    values: [True,False]
 
   actor_lr_scheduler.final_lr:
-    values: [3.0e-6]
+    values: [3e-6]
 
   actor_lr_scheduler.anneal_updates:
     values: [300000]
@@ -87,10 +87,13 @@ parameters:
     values: [1]
 
   method.penalty_lr:
-    values: [1e-2,5e-3]
+    values: [5e-3]
 
   eval.stochastic:
     values: [False]
 
   method.chi:
     values: [True]
+
+  method.penalty_coef:
+    values: [0.3]
