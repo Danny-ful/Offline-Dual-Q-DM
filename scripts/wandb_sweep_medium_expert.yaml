@@ -13,6 +13,7 @@ command:
   - env=cheetah
   - agent=sac
   - offline=True
+  - q_eval.enabled=True
   - env.expert_path=experts/halfcheetah.pkl
   - env.supplement_path=supplement/halfcheetah_medium_expert-v2.pkl
   - expert.demos=1

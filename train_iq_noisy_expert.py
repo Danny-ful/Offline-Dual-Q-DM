@@ -164,7 +164,7 @@ def main(cfg: DictConfig):
     else:
         args.agent.action_dim = env.action_space.shape[0]
 
-    wandb.init(
+    wandb_run = wandb.init(
         project=args.project_name,
         name=args.exp_name or None,
         config=OmegaConf.to_container(args, resolve=True),
@@ -172,103 +172,117 @@ def main(cfg: DictConfig):
         sync_tensorboard=False,
     )
 
-    # Seed envs
-    env.seed(args.seed)
-    eval_env.seed(args.seed + 10)
+    writer = None
+    exit_code = 1
+    try:
+        # Seed envs
+        env.seed(args.seed)
+        eval_env.seed(args.seed + 10)
 
-    REPLAY_MEMORY = int(env_args.replay_mem)
-    LEARN_STEPS = int(env_args.learn_steps)
+        REPLAY_MEMORY = int(env_args.replay_mem)
+        LEARN_STEPS = int(env_args.learn_steps)
 
-    agent = make_agent(env, args)
+        agent = make_agent(env, args)
 
-    if (getattr(args.method, "uncertainty", False)
-            or getattr(args.method, "synthetic_constrain", False)):
-        from agent.dynamics_ensemble import load_iq_dynamics
-        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
+        if (getattr(args.method, "uncertainty", False)
+                or getattr(args.method, "synthetic_constrain", False)):
+            from agent.dynamics_ensemble import load_iq_dynamics
+            load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
 
-    if args.pretrain:
-        pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
-        if os.path.isfile(pretrain_path):
-            print("=> loading pretrain '{}'".format(args.pretrain))
-            agent.load(pretrain_path)
-        else:
-            print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
+        if args.pretrain:
+            pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
+            if os.path.isfile(pretrain_path):
+                print("=> loading pretrain '{}'".format(args.pretrain))
+                agent.load(pretrain_path)
+            else:
+                print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
 
-    # Determine if we need to reduce observation dimension (for Ant-v2)
-    reduce_obs_dim = None
-    if args.env.name == 'Ant-v2' and args.env.get('reduce_obs_dim', False):
-        reduce_obs_dim = args.env.get('effective_obs_dim', 27)
-        print(f'--> Reducing observation dimension to {reduce_obs_dim} for {args.env.name}')
+        # Determine if we need to reduce observation dimension (for Ant-v2)
+        reduce_obs_dim = None
+        if args.env.name == 'Ant-v2' and args.env.get('reduce_obs_dim', False):
+            reduce_obs_dim = args.env.get('effective_obs_dim', 27)
+            print(f'--> Reducing observation dimension to {reduce_obs_dim} for {args.env.name}')
 
-    # Load expert data
-    expert_path = hydra.utils.to_absolute_path(args.env.expert_path)
-    expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed, reduce_obs_dim=reduce_obs_dim)
-    expert_memory_replay.load(expert_path,
-                              num_trajs=args.expert.demos,
-                              sample_freq=args.expert.subsample_freq,
-                              seed=args.seed + 42)
-    print(f'--> Expert memory size: {expert_memory_replay.size()}')
+        # Load expert data
+        expert_path = hydra.utils.to_absolute_path(args.env.expert_path)
+        expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed, reduce_obs_dim=reduce_obs_dim)
+        expert_memory_replay.load(expert_path,
+                                  num_trajs=args.expert.demos,
+                                  sample_freq=args.expert.subsample_freq,
+                                  seed=args.seed + 42)
+        print(f'--> Expert memory size: {expert_memory_replay.size()}')
 
-    # Load supplement data
-    supplement_path = hydra.utils.to_absolute_path(args.env.supplement_path)
-    if not os.path.isfile(supplement_path):
-        raise FileNotFoundError(
-            f"Supplement dataset not found at {supplement_path}."
+        # Load supplement data
+        supplement_path = hydra.utils.to_absolute_path(args.env.supplement_path)
+        if not os.path.isfile(supplement_path):
+            raise FileNotFoundError(
+                f"Supplement dataset not found at {supplement_path}."
+            )
+        online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1, reduce_obs_dim=reduce_obs_dim)
+        online_memory_replay.load(supplement_path,
+                                  num_trajs=np.iinfo(np.int32).max,
+                                  sample_freq=args.expert.subsample_freq,
+                                  seed=args.seed + 43)
+        print(f"--> Supplement memory size: {online_memory_replay.size()}")
+
+        # Setup logging
+        ts_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+        log_dir = os.path.join(
+            args.log_dir,
+            "noisy_expert",
+            args.exp_name,
+            f"seed_{args.seed}",
+            f"{ts_str}_pid{os.getpid()}",
         )
-    online_memory_replay = Memory(REPLAY_MEMORY//2, args.seed + 1, reduce_obs_dim=reduce_obs_dim)
-    online_memory_replay.load(supplement_path,
-                              num_trajs=np.iinfo(np.int32).max,
-                              sample_freq=args.expert.subsample_freq,
-                              seed=args.seed + 43)
-    print(f"--> Supplement memory size: {online_memory_replay.size()}")
 
-    # Setup logging
-    ts_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
-    log_dir = os.path.join(
-        args.log_dir,
-        "noisy_expert",
-        args.exp_name,
-        f"seed_{args.seed}",
-        f"{ts_str}_pid{os.getpid()}",
-    )
+        writer = SummaryWriter(log_dir=log_dir)
+        print(f'--> Saving logs at: {log_dir}')
 
-    writer = SummaryWriter(log_dir=log_dir)
-    print(f'--> Saving logs at: {log_dir}')
+        logger = Logger(log_dir,
+                        log_frequency=args.log_interval,
+                        writer=writer,
+                        save_tb=True,
+                        agent=args.agent.name)
 
-    logger = Logger(log_dir,
-                    log_frequency=args.log_interval,
-                    writer=writer,
-                    save_tb=True,
-                    agent=args.agent.name)
+        # Bind methods once to avoid repeated binding overhead and potential race conditions
+        agent.iq_update = types.MethodType(iq_update, agent)
+        agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
 
-    # Bind methods once to avoid repeated binding overhead and potential race conditions
-    agent.iq_update = types.MethodType(iq_update, agent)
-    agent.iq_update_critic = types.MethodType(iq_update_critic, agent)
+        # Lock for synchronizing tensorboard and wandb logging
+        log_lock = threading.Lock()
 
-    # Lock for synchronizing tensorboard and wandb logging
-    log_lock = threading.Lock()
+        for step in tqdm(range(LEARN_STEPS)):
+            losses = agent.iq_update(online_memory_replay,
+                                        expert_memory_replay, logger, step)
 
-    for step in tqdm(range(LEARN_STEPS)):
-        losses = agent.iq_update(online_memory_replay,
-                                    expert_memory_replay, logger, step)
+            # Thread-safe logging to tensorboard and wandb
+            if step % 1000 == 0:
+                with log_lock:
+                    for key, loss in losses.items():
+                        writer.add_scalar(key, loss, global_step=step)
 
-        # Thread-safe logging to tensorboard and wandb
-        if step % 1000 == 0:
-            with log_lock:
-                for key, loss in losses.items():
-                    writer.add_scalar(key, loss, global_step=step)
+            if step % args.env.eval_interval == 0:
+                eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
+                                                        stochastic=args.eval.stochastic)
+                returns = np.mean(eval_returns)
+                # Thread-safe logging
+                with log_lock:
+                    logger.log('eval/episode_reward', returns, step)
+                    logger.dump(step, ty='eval')
 
-        if step % args.env.eval_interval == 0:
-            eval_returns, eval_timesteps = evaluate(agent, eval_env, num_episodes=args.eval.eps,
-                                                    stochastic=args.eval.stochastic)
-            returns = np.mean(eval_returns)
-            # Thread-safe logging
-            with log_lock:
-                logger.log('eval/episode_reward', returns, step)
-                logger.dump(step, ty='eval')
-
-
-
+        if args.q_eval.enabled:
+            from test_q_distribution import finalize_q_diagnostics
+            diagnostics_dir = os.path.join(log_dir, "q_eval", wandb_run.id)
+            finalize_q_diagnostics(agent, args, supplement_path, wandb_run, diagnostics_dir)
+        exit_code = 0
+    finally:
+        # A diagnostic failure must not leave training logs buffered. Training
+        # exceptions still propagate and mark the run as failed.
+        try:
+            if writer is not None:
+                writer.close()
+        finally:
+            wandb_run.finish(exit_code=exit_code)
 
 
 # Minimal IQ-Learn objective

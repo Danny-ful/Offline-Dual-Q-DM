@@ -41,6 +41,16 @@ eval:
   expert_env: ''
   stochastic: False
 
+# Final offline Q plots; enabled by the medium-expert sweep only.
+q_eval:
+  enabled: false
+  low_quantile: 0.2
+  high_quantile: 0.8
+  examples_per_group: 3
+  seed: 2026
+  batch_size: 4096
+  progress_points: 101
+
 env:
   replay_mem: 50000
   initial_mem: 1280

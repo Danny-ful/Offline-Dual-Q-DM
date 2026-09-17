@@ -14,3 +14,4 @@ gym_minigrid==1.0.2
 mujoco_py==2.1.2.14
 robosuite==1.5.2
 h5py==3.11.0
+matplotlib>=3.5
