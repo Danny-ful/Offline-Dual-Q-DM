@@ -27,3 +27,4 @@ experts/
 *.hdf5
 gym.monitor.csv
 scripts/.sweep_state_*.env
+gym.monitor.csv
