@@ -1,4 +1,5 @@
 from itertools import count
+from pathlib import Path
 
 import hydra
 import torch
@@ -13,6 +14,11 @@ import wandb
 from make_envs import make_env
 from agent import make_agent
 from utils.utils import evaluate
+from utils.observation_normalizer import (
+    ObservationNormalizer,
+    normalizer_checkpoint_path,
+)
+from wrappers.normalize_observation_wrapper import NormalizeObservationWrapper
 
 def get_args(cfg: DictConfig):
     cfg.device = "cuda:0" if torch.cuda.is_available() else "cpu"
@@ -25,7 +31,6 @@ def main(cfg: DictConfig):
     args = get_args(cfg)
 
     env = make_env(args)
-    agent = make_agent(env, args)
 
     if args.method.type == "sqil":
         name = f'sqil'
@@ -37,11 +42,33 @@ def main(cfg: DictConfig):
         policy_file = f'{args.eval.policy}'
     print(f'Loading policy from: {policy_file}')
 
-    if args.eval.transfer:
-        agent.load(hydra.utils.to_absolute_path(policy_file),
-                   f'_{name}_{args.eval.expert_env}')
-    else:
-        agent.load(hydra.utils.to_absolute_path(policy_file), f'_{name}_{args.env.name}')
+    suffix = (f'_{name}_{args.eval.expert_env}' if args.eval.transfer
+              else f'_{name}_{args.env.name}')
+    policy_path = hydra.utils.to_absolute_path(policy_file)
+
+    observation_normalizer = None
+    obs_norm_cfg = getattr(args, "observation_normalization", None)
+    if obs_norm_cfg is not None and bool(getattr(obs_norm_cfg, "enabled", False)):
+        stats_path = getattr(obs_norm_cfg, "stats_path", None)
+        if stats_path:
+            stats_path = hydra.utils.to_absolute_path(stats_path)
+        else:
+            stats_path = normalizer_checkpoint_path(
+                os.path.join(policy_path, args.agent.name), suffix)
+        if not Path(stats_path).is_file():
+            raise FileNotFoundError(
+                "Observation normalization is enabled, but evaluation statistics "
+                f"were not found at {stats_path}. Set "
+                "observation_normalization.stats_path or use a checkpoint saved "
+                "with observation normalization."
+            )
+        observation_normalizer = ObservationNormalizer.load(stats_path)
+        env = NormalizeObservationWrapper(env, observation_normalizer)
+
+    agent = make_agent(env, args)
+    agent.observation_normalizer = observation_normalizer
+
+    agent.load(policy_path, suffix)
 
     eval_returns, eval_timesteps = evaluate(agent, env, num_episodes=args.eval.eps,
                                             stochastic=args.eval.stochastic)

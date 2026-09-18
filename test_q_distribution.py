@@ -91,7 +91,7 @@ def select_examples(groups, seed, count):
             for name, ids in groups.items()}
 
 
-def infer_trajectory_q(critic, trajectories, ids, device, batch_size):
+def infer_trajectory_q(critic, trajectories, ids, device, batch_size, normalizer=None):
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     previous_modes = [(module, module.training) for module in critic.modules()]
@@ -106,6 +106,8 @@ def infer_trajectory_q(critic, trajectories, ids, device, batch_size):
                     stop = min(start + batch_size, trajectory["length"])
                     states = torch.as_tensor(trajectory["states"][start:stop], device=device)
                     actions = torch.as_tensor(trajectory["actions"][start:stop], device=device)
+                    if normalizer is not None:
+                        states = normalizer.normalize_tensor(states)
                     # Use the public forward path, including any configured tanh scaling.
                     q = critic(states, actions)
                     if not torch.is_tensor(q) or q.shape not in ((stop-start,), (stop-start, 1)):
@@ -134,73 +136,67 @@ def equal_trajectory_histogram(curves, bins):
     return np.mean([np.histogram(q, bins=bins)[0] / len(q) for q in curves], axis=0)
 
 
-def make_plots(trajectories, q_values, groups, examples, metadata, output_dir, points):
-    # Headless rendering without changing the process-wide pyplot backend.
-    from matplotlib.figure import Figure
-    from matplotlib.backends.backend_agg import FigureCanvasAgg
-
-    colors = {"low": "#d97706", "high": "#2563eb"}
+def make_wandb_charts(trajectories, q_values, groups, examples, metadata, points, wandb):
     subtitle = (f"{metadata['q_definition']} | low return <= {metadata['low_threshold']:.3g} "
                 f"(n={len(groups['low'])}), high return >= {metadata['high_threshold']:.3g} "
                 f"(n={len(groups['high'])})")
-    paths = {}
-
-    def save(figure, name):
-        FigureCanvasAgg(figure)
-        path = output_dir / f"{name}.png"
-        figure.savefig(path, dpi=150, bbox_inches="tight")
-        paths[f"q_eval/{name}"] = path
-        figure.clear()
-
-    rows = max(len(ids) for ids in examples.values())
-    figure = Figure(figsize=(12, 2.7 * rows + 1), constrained_layout=True)
-    axes = figure.subplots(rows, 2, squeeze=False, sharey=True)
-    figure.suptitle("Fixed example trajectories\n" + subtitle, fontsize=11)
-    for col, name in enumerate(("low", "high")):
-        for row in range(rows):
-            ax = axes[row, col]
-            if row >= len(examples[name]):
-                ax.set_visible(False)
-                continue
-            index = examples[name][row]
+    example_rows = []
+    for name in ("low", "high"):
+        for index in examples[name]:
             trajectory = trajectories[index]
-            ax.plot(np.arange(trajectory["length"]), q_values[index], color=colors[name], lw=1,
-                    marker="o" if trajectory["length"] == 1 else None)
-            ax.set(title=f"{name.title()} | ID {index} | R={trajectory['return']:.2f} | T={trajectory['length']}",
-                   xlabel="Time step", ylabel="Q(s, dataset action)")
-            ax.grid(alpha=0.2)
-    save(figure, "example_trajectories")
+            series = (f"{name.title()} | ID {index} | "
+                      f"R={trajectory['return']:.2f} | T={trajectory['length']}")
+            example_rows.extend([
+                [step, float(q), series, name, index, trajectory["return"]]
+                for step, q in enumerate(q_values[index])
+            ])
+    example_table = wandb.Table(
+        columns=["time_step", "q", "series", "return_group", "trajectory_id", "return"],
+        data=example_rows)
 
-    figure = Figure(figsize=(10, 5), constrained_layout=True)
-    ax = figure.subplots()
+    progress_rows = []
     for name, ids in groups.items():
         progress, mean, quantiles = progress_statistics([q_values[i] for i in ids], points)
-        ax.plot(progress * 100, mean, color=colors[name], label=f"{name.title()} return")
-        ax.fill_between(progress * 100, *quantiles, color=colors[name], alpha=0.18)
-    ax.set(title="Mean Q by trajectory progress\n" + subtitle,
-           xlabel="Trajectory progress (%) — shaded: 25–75% across trajectories",
-           ylabel="Mean Q (equal trajectory weight)")
-    ax.legend()
-    ax.grid(alpha=0.2)
-    save(figure, "mean_q_by_return")
+        for progress_value, mean_value, q25, q75 in zip(
+                progress * 100, mean, quantiles[0], quantiles[1]):
+            progress_rows.extend([
+                [float(progress_value), float(mean_value), f"{name.title()} mean", name, "mean"],
+                [float(progress_value), float(q25), f"{name.title()} q25", name, "q25"],
+                [float(progress_value), float(q75), f"{name.title()} q75", name, "q75"],
+            ])
+    progress_table = wandb.Table(
+        columns=["progress_percent", "q", "series", "return_group", "statistic"],
+        data=progress_rows)
 
-    figure = Figure(figsize=(10, 5), constrained_layout=True)
-    ax = figure.subplots()
     q_min = min(float(q.min()) for q in q_values.values())
     q_max = max(float(q.max()) for q in q_values.values())
     if q_min == q_max:
         delta = max(0.5, abs(q_min) * 0.01)
         q_min, q_max = q_min - delta, q_max + delta
     bins = np.linspace(q_min, q_max, 51)
+    distribution_rows = []
     for name, ids in groups.items():
         probability = equal_trajectory_histogram([q_values[i] for i in ids], bins)
-        ax.stairs(probability, bins, fill=True, alpha=0.35,
-                  color=colors[name], label=f"{name.title()} return")
-    ax.set(title="Q distribution by trajectory return\n" + subtitle,
-           xlabel="Q(s, dataset action)", ylabel="Probability per bin (equal trajectory weight)")
-    ax.legend()
-    save(figure, "q_distribution_by_return")
-    return paths
+        distribution_rows.extend([
+            [float((left + right) / 2), float(probability_value), name,
+             float(left), float(right)]
+            for left, right, probability_value in zip(bins[:-1], bins[1:], probability)
+        ])
+    distribution_table = wandb.Table(
+        columns=["q_bin_center", "probability", "return_group", "bin_left", "bin_right"],
+        data=distribution_rows)
+
+    return {
+        "q_eval/example_trajectories_interactive": wandb.plot.line(
+            example_table, x="time_step", y="q", stroke="series",
+            title="Fixed example trajectories | " + subtitle),
+        "q_eval/mean_q_by_return_interactive": wandb.plot.line(
+            progress_table, x="progress_percent", y="q", stroke="series",
+            title="Mean Q by trajectory progress (mean and 25–75% bounds) | " + subtitle),
+        "q_eval/q_distribution_by_return_interactive": wandb.plot.line(
+            distribution_table, x="q_bin_center", y="probability", stroke="return_group",
+            title="Q distribution by trajectory return (equal trajectory weight) | " + subtitle),
+    }
 
 
 def write_metadata(output_dir, metadata):
@@ -233,6 +229,15 @@ def run_q_diagnostics(agent, args, dataset_path, wandb_run, output_dir):
                          "stored boundaries are used, including possible partial episodes. "
                          "done=0 is not treated as an incomplete episode.",
         "interpretation": "Environment return groups diagnose IQ Q ordering, not calibration.",
+        "observation_normalization": (
+            {"enabled": False}
+            if getattr(agent, "observation_normalizer", None) is None
+            else {
+                "enabled": True,
+                **agent.observation_normalizer.summary(),
+                "metadata": dict(agent.observation_normalizer.metadata),
+            }
+        ),
     }
     if not groups["low"] or not groups["high"]:
         metadata.update(status="skipped", reason="Return quantile thresholds coincide")
@@ -246,18 +251,21 @@ def run_q_diagnostics(agent, args, dataset_path, wandb_run, output_dir):
     write_metadata(output_dir, metadata)
     ids = sorted(set(groups["low"] + groups["high"]))
     print(f"[Q diagnostics] Evaluating {len(ids)} trajectories; thresholds {low:.3f}, {high:.3f}", flush=True)
-    q_values = infer_trajectory_q(agent.critic, trajectories, ids, agent.device, cfg.batch_size)
-    paths = make_plots(trajectories, q_values, groups, examples, metadata,
-                       output_dir, cfg.progress_points)
+    q_values = infer_trajectory_q(
+        agent.critic, trajectories, ids, agent.device, cfg.batch_size,
+        normalizer=getattr(agent, "observation_normalizer", None))
+    charts = {}
     if wandb_run is not None:
         import wandb
+        charts = make_wandb_charts(
+            trajectories, q_values, groups, examples, metadata,
+            cfg.progress_points, wandb)
         # Do not pass explicit step: the existing logger increments W&B's internal
         # step separately from training updates. finish() is owned by the caller.
-        wandb_run.log({key: wandb.Image(str(path), caption=q_definition)
-                       for key, path in paths.items()})
+        wandb_run.log(charts)
         wandb_run.summary["q_eval/status"] = "logged"
     metadata["status"] = "logged" if wandb_run is not None else "local_only"
-    metadata["plots"] = {key: str(path) for key, path in paths.items()}
+    metadata["charts"] = sorted(charts)
     write_metadata(output_dir, metadata)
     print(f"[Q diagnostics] Saved results to {output_dir}", flush=True)
     return metadata
@@ -270,6 +278,8 @@ def finalize_q_diagnostics(agent, args, dataset_path, wandb_run, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     torch.save(agent.critic.state_dict(), output_dir / "final_critic.pt")
+    if getattr(agent, "observation_normalizer", None) is not None:
+        agent.observation_normalizer.save(output_dir / "observation_normalizer.npz")
     OmegaConf.save(args, output_dir / "config.yaml", resolve=True)
     try:
         return run_q_diagnostics(agent, args, dataset_path, wandb_run, output_dir)
@@ -300,7 +310,22 @@ def main():
     args.device = options.device
     critic = hydra.utils.instantiate(args.agent.critic_cfg, args=args, _recursive_=False)
     critic.load_state_dict(torch.load(options.critic, map_location="cpu", weights_only=True))
-    agent = SimpleNamespace(critic=critic.to(options.device), device=options.device)
+    normalizer = None
+    obs_norm_cfg = getattr(args, "observation_normalization", None)
+    if obs_norm_cfg is not None and bool(getattr(obs_norm_cfg, "enabled", False)):
+        from utils.observation_normalizer import ObservationNormalizer
+        stats_path = getattr(obs_norm_cfg, "stats_path", None)
+        if stats_path is None:
+            candidate = Path(options.config).resolve().parent / "observation_normalizer.npz"
+            if not candidate.is_file():
+                raise FileNotFoundError(
+                    "Normalized Q diagnostics require observation_normalization.stats_path "
+                    "or observation_normalizer.npz beside the config")
+            stats_path = candidate
+        normalizer = ObservationNormalizer.load(stats_path)
+    agent = SimpleNamespace(
+        critic=critic.to(options.device), device=options.device,
+        observation_normalizer=normalizer)
     run_q_diagnostics(agent, args, options.dataset, None, options.output)
 
 

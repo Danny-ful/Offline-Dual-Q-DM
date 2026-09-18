@@ -7,6 +7,10 @@ from torch.distributions import Categorical
 import hydra
 
 from wrappers.atari_wrapper import LazyFrames
+from utils.observation_normalizer import (
+    save_agent_observation_normalizer,
+    validate_agent_observation_normalizer,
+)
 
 
 class SoftQ(object):
@@ -118,11 +122,13 @@ class SoftQ(object):
         critic_path = f"{path}{suffix}"
         # print('Saving models to {} and {}'.format(actor_path, critic_path))
         torch.save(self.q_net.state_dict(), critic_path)
+        save_agent_observation_normalizer(self, path, suffix)
 
     # Load model parameters
     def load(self, path, suffix=""):
         critic_path = f'{path}/{self.args.agent.name}{suffix}'
         print('Loading models from {}'.format(critic_path))
+        validate_agent_observation_normalizer(self, f'{path}/{self.args.agent.name}', suffix)
         self.q_net.load_state_dict(torch.load(critic_path, map_location=self.device))
 
     def infer_q(self, state, action):

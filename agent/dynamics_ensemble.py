@@ -275,6 +275,14 @@ def load_iq_dynamics(agent, obs_dim, action_dim):
         hidden_dim=hidden_dim, hidden_depth=hidden_depth,
     ).to(args.device)
     ensemble.load(path, map_location=args.device)
+    normalizer = getattr(agent, 'observation_normalizer', None)
+    if normalizer is not None:
+        if normalizer.obs_dim != obs_dim:
+            raise ValueError(
+                'Observation normalizer dimension does not match the policy observation dimension')
+        if ensemble.obs_dim != obs_dim:
+            raise ValueError(
+                'Dynamics checkpoint observation dimension does not match the observation normalizer')
     ensemble.eval()
     ensemble.requires_grad_(False)
     agent.dynamics_ensemble = ensemble

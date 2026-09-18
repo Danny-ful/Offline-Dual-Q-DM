@@ -30,6 +30,8 @@ from iq import iq_loss, prepare_iq_step, update_iq_penalty, synthetic_iq_loss
 from tqdm import tqdm
 import pickle
 from dataset.expert_dataset import ExpertDataset
+from utils.observation_normalizer import NormalizedReplayView, build_observation_normalizer
+from wrappers.normalize_observation_wrapper import NormalizeObservationWrapper
 
 torch.set_num_threads(2)
 
@@ -52,6 +54,11 @@ class OfflineMemory(object):
 
     def size(self):
         return self.memory_size
+
+    def raw_observations(self):
+        if self.states is None or not len(self.states):
+            raise ValueError("Cannot read observations from an empty replay buffer")
+        return self.states
 
     def load(self, path):
         dataset = np.load(path, allow_pickle=True)
@@ -134,21 +141,6 @@ def main(cfg: DictConfig):
     REPLAY_MEMORY = int(env_args.replay_mem)
     LEARN_STEPS = int(env_args.learn_steps)
 
-    agent = make_agent(env, args)
-
-    if (getattr(args.method, "uncertainty", False)
-            or getattr(args.method, "synthetic_constrain", False)):
-        from agent.dynamics_ensemble import load_iq_dynamics
-        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
-
-    if args.pretrain:
-        pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
-        if os.path.isfile(pretrain_path):
-            print("=> loading pretrain '{}'".format(args.pretrain))
-            agent.load(pretrain_path)
-        else:
-            print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
-
     # Load expert data
     expert_memory_replay = Memory(REPLAY_MEMORY//2, args.seed)
     expert_memory_replay.load(hydra.utils.to_absolute_path(f'experts/{args.env.demo}'),
@@ -170,11 +162,52 @@ def main(cfg: DictConfig):
     )
     print(f"--> Supplement memory size: {online_memory_replay.size()}")
 
+    obs_norm_cfg = getattr(args, "observation_normalization", None)
+    stats_path = getattr(obs_norm_cfg, "stats_path", None) if obs_norm_cfg is not None else None
+    if stats_path:
+        stats_path = hydra.utils.to_absolute_path(stats_path)
+    observation_normalizer = build_observation_normalizer(
+        obs_norm_cfg,
+        online_memory_replay.raw_observations(),
+        stats_path=stats_path,
+        metadata={
+            "source": "supplement",
+            "environment": args.env.name,
+            "transition_count": online_memory_replay.size(),
+            "subsample_freq": int(args.expert.subsample_freq),
+        },
+    )
+    if observation_normalizer is not None:
+        env = NormalizeObservationWrapper(env, observation_normalizer)
+        eval_env = NormalizeObservationWrapper(eval_env, observation_normalizer)
+        expert_memory_replay = NormalizedReplayView(
+            expert_memory_replay, observation_normalizer)
+        online_memory_replay = NormalizedReplayView(
+            online_memory_replay, observation_normalizer)
+
+    agent = make_agent(env, args)
+    agent.observation_normalizer = observation_normalizer
+
+    if (getattr(args.method, "uncertainty", False)
+            or getattr(args.method, "synthetic_constrain", False)):
+        from agent.dynamics_ensemble import load_iq_dynamics
+        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
+
+    if args.pretrain:
+        pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
+        if os.path.isfile(pretrain_path) or os.path.isdir(pretrain_path):
+            print("=> loading pretrain '{}'".format(args.pretrain))
+            agent.load(pretrain_path)
+        else:
+            print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
+
     # Setup logging
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join(args.log_dir, "offline")
     
     writer = SummaryWriter(log_dir=log_dir)
+    if observation_normalizer is not None:
+        observation_normalizer.save(os.path.join(log_dir, "observation_normalizer.npz"))
     print(f'--> Saving logs at: {log_dir}')
     
     logger = Logger(log_dir,

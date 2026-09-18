@@ -8,6 +8,11 @@ import math
 import torch
 import torch.nn.functional as F
 
+from utils.observation_normalizer import (
+    policy_to_raw_observation,
+    raw_to_policy_observation,
+)
+
 
 def bellman_constraint(reward, args):
     """Elementwise implicit-reward constraint, shared by real and model data."""
@@ -317,7 +322,10 @@ def _compute_dynamics_penalty(agent, batch, *, shared_noise=True):
         if shared_noise:
             dynamics_noise = torch.randn(B, M, ens.effective_obs_dim,
                                          device=obs.device, dtype=obs.dtype)
-        next_states = ens.sample_next_ensemble(obs, action, M=M, noise=dynamics_noise)
+        raw_obs = policy_to_raw_observation(agent, obs)
+        raw_next_states = ens.sample_next_ensemble(
+            raw_obs, action, M=M, noise=dynamics_noise)
+        next_states = raw_to_policy_observation(agent, raw_next_states)
         N = next_states.size(1)
         if N < 1 or N != int(args.method.penalty_N):
             raise ValueError("Sampled ensemble size must match penalty_N and be positive")
@@ -416,19 +424,24 @@ def synthetic_iq_loss(agent, obs, step, log_this_step=False):
     with torch.no_grad():
         obs = obs.detach()
         action = agent.actor.sample(obs)[0]
+        raw_obs = policy_to_raw_observation(agent, obs)
         dynamics_noise = torch.randn(B, M, ens.effective_obs_dim,
                                      device=obs.device, dtype=obs.dtype)
-        next_states = ens.sample_next_ensemble(obs, action, M=M, noise=dynamics_noise)
-        N = next_states.size(1)
+        raw_next_states = ens.sample_next_ensemble(
+            raw_obs, action, M=M, noise=dynamics_noise)
+        N = raw_next_states.size(1)
         if N != int(method.penalty_N):
             raise ValueError('Sampled ensemble size must match penalty_N')
-        flat_s = next_states.reshape(B * N * M, -1)
-        if not torch.isfinite(flat_s).all():
+        flat_raw_s = raw_next_states.reshape(B * N * M, -1)
+        if not torch.isfinite(flat_raw_s).all():
             raise ValueError('Dynamics produced non-finite synthetic next states')
         done_fn = getattr(agent, 'synthetic_done_fn', None)
-        model_done = (done_fn(flat_s) if done_fn is not None
-                      else synthetic_done(flat_s, args.env.name))
+        # Termination thresholds describe physical/raw observation units.
+        model_done = (done_fn(flat_raw_s) if done_fn is not None
+                      else synthetic_done(flat_raw_s, args.env.name))
         continuation = (~model_done).to(obs)
+        next_states = raw_to_policy_observation(agent, raw_next_states)
+        flat_s = next_states.reshape(B * N * M, -1)
         actor_noise = torch.randn(B, M, action.size(-1), device=obs.device, dtype=obs.dtype)
         flat_noise = actor_noise.unsqueeze(1).expand(B, N, M, -1).reshape(B * N * M, -1)
         next_action, log_prob, _ = agent.actor.sample(flat_s, noise=flat_noise)

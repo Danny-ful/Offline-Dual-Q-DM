@@ -76,6 +76,38 @@ We show example code for training Q-Learning and SAC agents with **IQ-Learn** in
     `python -m vis.maze_vis env=pointmaze_right eval.policy=pointmaze agent.init_temp=1 agent=sac.q_net._target_=agent.sac_models.DoubleQCritic`. <br>
     Reward visualizations are saved in `vis/outputs` directory
 
+## Observation normalization
+
+Standard offline IQ training enables fixed observation normalization by default;
+the Robosuite entry point intentionally does not use it. The mean and population
+standard deviation are computed once from the current states in the supplement /
+imperfect dataset after trajectory selection and subsampling:
+
+```text
+normalized_observation = (observation - mean) / (std + 1e-3)
+```
+
+The same immutable statistics are applied to expert batches, supplement batches,
+and observations from both the training and evaluation environments. Offline
+replay data remain in original units. Dynamics ensembles also keep their existing
+raw-unit interface: policy observations are converted back to raw units before
+model inference, model predictions and synthetic termination checks stay in raw
+units, and predicted next observations are normalized before actor or critic
+evaluation.
+
+Each run writes `observation_normalizer.npz` in its log directory, and agent
+checkpoints write a matching `*_obs_normalizer.npz` sidecar. `test_iq.py` loads the
+sidecar automatically; alternatively set
+`observation_normalization.stats_path=/absolute/path/to/observation_normalizer.npz`.
+Checkpoint loading verifies that the active statistics match the sidecar. To load
+an old checkpoint intentionally, either disable normalization with
+`observation_normalization.enabled=false` or supply compatible statistics and set
+`observation_normalization.strict_checkpoint=false`.
+
+Online training and pure BC do not have a supplement dataset from which to fit
+these statistics. When normalization remains enabled, provide
+`observation_normalization.stats_path`; otherwise disable it explicitly.
+
 ## W&B Bayes Sweep (Offline Hopper stability)
 
 The repository includes a ready-to-run Bayes sweep config at:

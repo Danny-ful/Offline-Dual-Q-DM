@@ -41,6 +41,14 @@ eval:
   expert_env: ''
   stochastic: False
 
+# Fixed imitation-dice observation normalization. Statistics are fitted once
+# from supplement/imperfect current states and shared by replay and evaluation.
+observation_normalization:
+  enabled: true
+  eps: 1.0e-3
+  stats_path: null
+  strict_checkpoint: true
+
 # Final offline Q plots; enabled by the medium-expert sweep only.
 q_eval:
   enabled: false

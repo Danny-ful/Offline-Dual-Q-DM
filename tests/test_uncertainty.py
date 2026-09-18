@@ -12,6 +12,7 @@ from torch import nn
 
 import iq
 from utils.utils import get_concat_samples, average_dicts
+from utils.observation_normalizer import ObservationNormalizer
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,6 +99,20 @@ class UncertaintyTests(unittest.TestCase):
         gamma = iq._compute_dynamics_penalty(agent, batch)
         torch.testing.assert_close(gamma[0], torch.zeros(1))
         torch.testing.assert_close(gamma[1:], expected.expand(3, 1))
+
+    def test_normalized_policy_states_are_denormalized_for_dynamics(self):
+        agent, batch = fixture((-1., 0., 1.))
+        agent.critic_target.action_sensitive = False
+        raw_obs = batch[0].clone()
+        normalizer = ObservationNormalizer(
+            mean=[10., 20.], std=[2., 4.], eps=1e-3)
+        agent.observation_normalizer = normalizer
+        normalized_obs = normalizer.normalize_tensor(raw_obs)
+        normalized_batch = (normalized_obs, batch[1], *batch[2:])
+        with patch.object(agent.dynamics_ensemble, 'sample_next_ensemble',
+                          wraps=agent.dynamics_ensemble.sample_next_ensemble) as sample:
+            iq._compute_dynamics_penalty(agent, normalized_batch)
+        torch.testing.assert_close(sample.call_args.args[0], raw_obs)
 
     def test_shared_noise_padding_and_resampling(self):
         agent, batch = fixture()

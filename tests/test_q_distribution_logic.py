@@ -2,6 +2,7 @@
 
 import json
 import pickle
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -39,6 +40,18 @@ class RecordingRun:
 
     def log(self, values):
         self.records.append(values)
+
+
+class RecordingTable:
+    def __init__(self, columns, data):
+        self.columns = columns
+        self.data = data
+
+
+class RecordingPlot:
+    @staticmethod
+    def line(table, x, y, stroke, title):
+        return SimpleNamespace(table=table, x=x, y=y, stroke=stroke, title=title)
 
 
 def config():
@@ -132,21 +145,35 @@ def test_average_and_distribution_give_each_trajectory_equal_weight():
     np.testing.assert_allclose(equal_trajectory_histogram(curves, [-1, 5, 11]), [0.5, 0.5])
 
 
-def test_finalizer_saves_checkpoint_and_logs_only_three_images(tmp_path):
+def test_finalizer_saves_checkpoint_and_logs_only_three_wandb_charts(tmp_path):
     path = tmp_path / "data.pkl"
     dataset(path)
     agent = SimpleNamespace(critic=DoubleQCritic(), device="cpu")
     run = RecordingRun()
     output = tmp_path / "result"
-    result = finalize_q_diagnostics(agent, config(), path, run, output)
+    wandb = SimpleNamespace(Table=RecordingTable, plot=RecordingPlot())
+    with patch.dict(sys.modules, {"wandb": wandb}):
+        result = finalize_q_diagnostics(agent, config(), path, run, output)
     assert result["status"] == "logged"
     assert len(run.records) == 1
     assert set(run.records[0]) == {
-        "q_eval/example_trajectories", "q_eval/mean_q_by_return",
-        "q_eval/q_distribution_by_return",
+        "q_eval/example_trajectories_interactive", "q_eval/mean_q_by_return_interactive",
+        "q_eval/q_distribution_by_return_interactive",
     }
-    for image_path in result["plots"].values():
-        assert Path(image_path).read_bytes().startswith(b"\x89PNG")
+    charts = run.records[0]
+    assert charts["q_eval/example_trajectories_interactive"].table.columns == [
+        "time_step", "q", "series", "return_group", "trajectory_id", "return"]
+    progress = charts["q_eval/mean_q_by_return_interactive"].table
+    assert progress.columns == [
+        "progress_percent", "q", "series", "return_group", "statistic"]
+    assert {row[-1] for row in progress.data} == {"mean", "q25", "q75"}
+    distribution = charts["q_eval/q_distribution_by_return_interactive"].table
+    assert distribution.columns == [
+        "q_bin_center", "probability", "return_group", "bin_left", "bin_right"]
+    assert len(distribution.data) == 100
+    for group in ("low", "high"):
+        assert sum(row[1] for row in distribution.data if row[2] == group) == pytest.approx(1)
+    assert not list(output.glob("*.png"))
     assert (output / "config.yaml").is_file()
     state = torch.load(output / "final_critic.pt", weights_only=True)
     assert torch.equal(state["scale"], agent.critic.scale)
@@ -228,6 +255,13 @@ def test_training_entry_runs_diagnostics_once_then_closes_logs(tmp_path, fail_tr
         "iq_update": update, "iq_update_critic": lambda *a: None,
         "tqdm": lambda x: x, "evaluate": lambda *a, **kw: ([1], [1]),
     }
+    from utils.observation_normalizer import NormalizedReplayView, build_observation_normalizer
+    from wrappers.normalize_observation_wrapper import NormalizeObservationWrapper
+    namespace.update(
+        NormalizedReplayView=NormalizedReplayView,
+        build_observation_normalizer=build_observation_normalizer,
+        NormalizeObservationWrapper=NormalizeObservationWrapper,
+    )
     exec(compile(ast.Module(body=[main_node], type_ignores=[]), str(source), "exec"), namespace)
     with patch("test_q_distribution.finalize_q_diagnostics",
                side_effect=lambda *a: events.append("diagnostics")):

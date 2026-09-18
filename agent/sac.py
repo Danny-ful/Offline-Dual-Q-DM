@@ -7,6 +7,10 @@ import hydra
 
 from agent.lr_scheduler import make_actor_lr_scheduler, step_actor_lr_scheduler
 from utils.utils import soft_update
+from utils.observation_normalizer import (
+    save_agent_observation_normalizer,
+    validate_agent_observation_normalizer,
+)
 
 
 class SAC(object):
@@ -202,12 +206,15 @@ class SAC(object):
         # print('Saving models to {} and {}'.format(actor_path, critic_path))
         torch.save(self.actor.state_dict(), actor_path)
         torch.save(self.critic.state_dict(), critic_path)
+        save_agent_observation_normalizer(self, path, suffix)
 
     # Load model parameters
     def load(self, path, suffix=""):
         actor_path = f'{path}/{self.args.agent.name}{suffix}_actor'
         critic_path = f'{path}/{self.args.agent.name}{suffix}_critic'
+        normalizer_base = f'{path}/{self.args.agent.name}'
         print('Loading models from {} and {}'.format(actor_path, critic_path))
+        validate_agent_observation_normalizer(self, normalizer_base, suffix)
         if actor_path is not None:
             self.actor.load_state_dict(torch.load(actor_path, map_location=self.device))
         if critic_path is not None:

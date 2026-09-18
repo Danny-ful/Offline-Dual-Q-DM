@@ -14,6 +14,7 @@ import iq
 from test_uncertainty import ROOT, fixture, load_model_file
 from utils.utils import average_dicts, get_concat_samples
 from utils.robosuite_termination import RobosuiteTermination
+from utils.observation_normalizer import ObservationNormalizer
 
 
 class FixedActor(nn.Module):
@@ -116,6 +117,24 @@ class SyntheticConstraintTests(unittest.TestCase):
         expected_target = 0.9 * (0.5 + 0.6 + 0.15) / 2
         expected = 0.2 * iq.bellman_constraint(q - expected_target, agent.args).mean()
         torch.testing.assert_close(loss, expected)
+        self.assertEqual(logs['synthetic/terminal_fraction'], 0.5)
+
+    def test_normalized_synthetic_path_uses_raw_dynamics_and_termination(self):
+        agent, batch = synthetic_fixture()
+        agent.args.env.name = 'Ant-v2'
+        agent.args.method.uncertainty = False
+        agent.args.q_net._target_ = 'SingleQ'
+        normalizer = ObservationNormalizer(mean=[10., 20.], std=[2., 4.], eps=1e-3)
+        agent.observation_normalizer = normalizer
+        raw_obs = batch[0].clone()
+        normalized_obs = normalizer.normalize_tensor(raw_obs)
+        raw_next = torch.zeros(4, 2, agent.args.method.synthetic_M, 2)
+        raw_next[:, 0, :, 0] = 0.5
+        raw_next[:, 1, :, 0] = 1.5
+        with patch.object(agent.dynamics_ensemble, 'sample_next_ensemble',
+                          return_value=raw_next) as sample:
+            _, logs = iq.synthetic_iq_loss(agent, normalized_obs, 1, True)
+        torch.testing.assert_close(sample.call_args.args[0], raw_obs)
         self.assertEqual(logs['synthetic/terminal_fraction'], 0.5)
 
     def test_termination_boundaries(self):

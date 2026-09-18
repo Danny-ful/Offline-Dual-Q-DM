@@ -10,10 +10,16 @@ import pickle
 import matplotlib
 import os
 import wandb
+from pathlib import Path
 
 from utils.utils import evaluate
 from agent import make_agent
 from make_envs import make_env
+from utils.observation_normalizer import (
+    ObservationNormalizer,
+    normalizer_checkpoint_path,
+)
+from wrappers.normalize_observation_wrapper import NormalizeObservationWrapper
 
 matplotlib.use('Agg')
 
@@ -31,7 +37,6 @@ def main(cfg: DictConfig):
     GAMMA = args.gamma
 
     env = make_env(args)
-    agent = make_agent(env, args)
 
     if args.method.type == "sqil":
         name = f'sqil'
@@ -44,11 +49,30 @@ def main(cfg: DictConfig):
         policy_file = f'{args.eval.policy}'
     print(f'Loading policy from: {policy_file}')
 
-    if args.eval.transfer:
-        agent.load(hydra.utils.to_absolute_path(policy_file),
-                   f'_{name}_{args.eval.expert_env}')
-    else:
-        agent.load(hydra.utils.to_absolute_path(policy_file), f'_{name}_{args.env.name}')
+    suffix = (f'_{name}_{args.eval.expert_env}' if args.eval.transfer
+              else f'_{name}_{args.env.name}')
+    policy_path = hydra.utils.to_absolute_path(policy_file)
+    observation_normalizer = None
+    obs_norm_cfg = getattr(args, "observation_normalization", None)
+    if obs_norm_cfg is not None and bool(getattr(obs_norm_cfg, "enabled", False)):
+        stats_path = getattr(obs_norm_cfg, "stats_path", None)
+        if stats_path:
+            stats_path = hydra.utils.to_absolute_path(stats_path)
+        else:
+            stats_path = normalizer_checkpoint_path(
+                os.path.join(policy_path, args.agent.name), suffix)
+        if not Path(stats_path).is_file():
+            raise FileNotFoundError(
+                "Observation normalization is enabled, but visualization statistics "
+                f"were not found at {stats_path}."
+            )
+        observation_normalizer = ObservationNormalizer.load(stats_path)
+        env = NormalizeObservationWrapper(env, observation_normalizer)
+
+    agent = make_agent(env, args)
+    agent.observation_normalizer = observation_normalizer
+
+    agent.load(policy_path, suffix)
 
     # eval_returns, eval_timesteps = evaluate(agent, env, num_episodes=10)
     # print(f'Avg. eval returns: {eval_returns}, timesteps: {eval_timesteps}')
@@ -112,7 +136,9 @@ def visualize_reward(agent, env, args, use_wandb=False):
                 state = np.concatenate(
                     [[pos_x, pos_y, 0.], target], axis=0)
                 env.make_state(state)
-                action = agent.choose_action(state, sample=False)
+                policy_state = (state if agent.observation_normalizer is None
+                                else agent.observation_normalizer.normalize_np(state))
+                action = agent.choose_action(policy_state, sample=False)
                 next_state, reward, done, _ = env.step(action)
 
                 obs_action.append(action)
@@ -125,6 +151,10 @@ def visualize_reward(agent, env, args, use_wandb=False):
         target_batch = np.repeat([target], obs_batch.shape[0], axis=0)
         obs_batch = np.concatenate([obs_batch, target_batch], axis=1)
         next_obs_batch = np.concatenate([next_obs_batch, target_batch], axis=1)
+
+        if agent.observation_normalizer is not None:
+            obs_batch = agent.observation_normalizer.normalize_np(obs_batch)
+            next_obs_batch = agent.observation_normalizer.normalize_np(next_obs_batch)
 
         # Get sqil reward
         with torch.no_grad():

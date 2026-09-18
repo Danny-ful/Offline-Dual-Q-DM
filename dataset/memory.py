@@ -31,6 +31,14 @@ class Memory(object):
     def size(self):
         return len(self.buffer)
 
+    def raw_observations(self):
+        """Return the raw current-state matrix used by this replay buffer."""
+        if self._array_cache is None:
+            self._build_array_cache()
+        if self._array_cache is None:
+            raise ValueError("Cannot read observations from an empty replay buffer")
+        return self._array_cache[0]
+
     def sample(self, batch_size: int, continuous: bool = True):
         if batch_size > len(self.buffer):
             batch_size = len(self.buffer)

@@ -30,7 +30,11 @@ from agent.bc import bc_update
 from utils.utils import eval_mode, average_dicts, get_concat_samples, evaluate, soft_update, hard_update
 from utils.logger import Logger
 from iq import iq_loss, prepare_iq_step, update_iq_penalty, synthetic_iq_loss
-from recoil import recoil_update
+from utils.observation_normalizer import (
+    NormalizedReplayView,
+    build_observation_normalizer,
+)
+from wrappers.normalize_observation_wrapper import NormalizeObservationWrapper
 
 torch.set_num_threads(2)
 
@@ -87,28 +91,7 @@ def main(cfg: DictConfig):
     LEARN_STEPS = int(env_args.learn_steps)
     INITIAL_STATES = 128  # Num initial states to use to calculate value of initial state distribution s_0
 
-    agent = make_agent(env, args)
-
-    if (getattr(args.method, "uncertainty", False)
-            or getattr(args.method, "synthetic_constrain", False)):
-        from agent.dynamics_ensemble import load_iq_dynamics
-        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
-
-    if args.pretrain:
-        pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
-        if os.path.isfile(pretrain_path):
-            print("=> loading pretrain '{}'".format(args.pretrain))
-            agent.load(pretrain_path)
-        else:
-            print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
-
     is_bc = args.method.type == "bc"
-    is_recoil = args.method.type == "recoil"
-    if is_recoil and not bool(args.offline):
-        raise ValueError(
-            "ReCOIL is an offline algorithm; please run with offline=True "
-            "(it needs a suboptimal dataset under supplement/)."
-        )
     # BC trains purely from expert data; reuse the offline loop (no env interaction).
     data_only = bool(args.offline) or is_bc
 
@@ -145,10 +128,58 @@ def main(cfg: DictConfig):
         #                           seed=args.seed + 43)
         print(f'--> Supplement memory size: {online_memory_replay.size()}')
 
+    obs_norm_cfg = getattr(args, "observation_normalization", None)
+    stats_path = getattr(obs_norm_cfg, "stats_path", None) if obs_norm_cfg is not None else None
+    if stats_path:
+        stats_path = hydra.utils.to_absolute_path(stats_path)
+    fit_observations = (
+        online_memory_replay.raw_observations()
+        if data_only and not is_bc
+        else None
+    )
+    observation_normalizer = build_observation_normalizer(
+        obs_norm_cfg,
+        fit_observations,
+        stats_path=stats_path,
+        metadata={
+            "source": "supplement",
+            "environment": args.env.name,
+            "transition_count": 0 if fit_observations is None else len(fit_observations),
+            "subsample_freq": int(args.expert.subsample_freq),
+            "reduce_obs_dim": reduce_obs_dim,
+        },
+    )
+    if observation_normalizer is not None:
+        env = NormalizeObservationWrapper(env, observation_normalizer)
+        eval_env = NormalizeObservationWrapper(eval_env, observation_normalizer)
+        expert_memory_replay = NormalizedReplayView(
+            expert_memory_replay, observation_normalizer)
+        if data_only and not is_bc:
+            online_memory_replay = NormalizedReplayView(
+                online_memory_replay, observation_normalizer)
+
+    agent = make_agent(env, args)
+    agent.observation_normalizer = observation_normalizer
+
+    if (getattr(args.method, "uncertainty", False)
+            or getattr(args.method, "synthetic_constrain", False)):
+        from agent.dynamics_ensemble import load_iq_dynamics
+        load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
+
+    if args.pretrain:
+        pretrain_path = hydra.utils.to_absolute_path(args.pretrain)
+        if os.path.isfile(pretrain_path) or os.path.isdir(pretrain_path):
+            print("=> loading pretrain '{}'".format(args.pretrain))
+            agent.load(pretrain_path)
+        else:
+            print("[Attention]: Did not find checkpoint {}".format(args.pretrain))
+
     # Setup logging
     ts_str = datetime.datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d_%H-%M-%S")
     log_dir = os.path.join(args.log_dir, args.env.name, args.exp_name, ts_str)
     writer = SummaryWriter(log_dir=log_dir)
+    if observation_normalizer is not None:
+        observation_normalizer.save(os.path.join(log_dir, "observation_normalizer.npz"))
     cleanup_done = False
 
     def close_loggers():
@@ -264,11 +295,6 @@ def main(cfg: DictConfig):
                     # BC update using expert data only.
                     agent.bc_update = types.MethodType(bc_update, agent)
                     losses = agent.bc_update(expert_memory_replay, logger, learn_steps)
-                elif is_recoil:
-                    # ReCOIL: three-way update over expert + supplement mixture.
-                    agent.recoil_update = types.MethodType(recoil_update, agent)
-                    losses = agent.recoil_update(online_memory_replay,
-                                                 expert_memory_replay, logger, learn_steps)
                 else:
                     # IQ-Learn update without environment interaction.
                     agent.iq_update = types.MethodType(iq_update, agent)
@@ -370,8 +396,6 @@ def save(agent, epoch, args, output_dir='results'):
     if epoch % args.save_interval == 0:
         if args.method.type == "sqil":
             name = f'sqil_{args.env.name}'
-        elif args.method.type == "recoil":
-            name = f'recoil_{args.env.name}'
         else:
             name = f'iq_{args.env.name}'
 

@@ -71,8 +71,10 @@ trap cleanup EXIT
 "$PYTHON_BIN" train_iq.py \
   env="${ENV_NAME}" \
   agent=sac \
-  offline=False \
+  offline=True \
   env.demo="${ENV_DEMO}" \
+  env.expert_path="experts/${ENV_DEMO}" \
+  env.supplement_path="supplement/${ENV_DEMO}" \
   expert.demos="${EXPERT_DEMOS}" \
   expert.subsample_freq=1 \
   method.loss=v0 \
