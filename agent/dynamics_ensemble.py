@@ -7,6 +7,7 @@ with learnable per-dimension log_std bounds (MOPO-style).
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
 import torch
@@ -45,17 +46,36 @@ class ProbDynamics(nn.Module):
         # learnable per-dim log_std bounds (MOPO trick keeps log_std within a range)
         self.max_log_std = nn.Parameter(torch.full((obs_dim,), log_std_max))
         self.min_log_std = nn.Parameter(torch.full((obs_dim,), log_std_min))
-        # Identity defaults preserve the behavior of unnormalized/legacy models.
+        # Identity defaults are used when observations are already policy-normalized.
         for name, dim in (("obs", obs_dim), ("action", action_dim), ("delta", obs_dim)):
             self.register_buffer(name + "_mean", torch.zeros(dim))
             self.register_buffer(name + "_std", torch.ones(dim))
 
     @torch.no_grad()
-    def fit_normalization(self, obs, action, next_obs, eps: float = 1e-6) -> None:
-        """Fit once using the training split, before member bootstrapping."""
+    def fit_normalization(
+        self, obs, action, next_obs, eps: float = 1e-6,
+        *, normalize_observation: bool = True,
+    ) -> None:
+        """Fit once using the training split, before member bootstrapping.
+
+        MuJoCo dynamics receive policy-normalized observations, so their
+        observation transform is the identity. Action and delta statistics
+        remain model-local training transforms.
+        """
         if eps <= 0 or not torch.isfinite(torch.tensor(eps)):
             raise ValueError("Normalization eps must be finite and positive")
-        for name, values in (("obs", obs), ("action", action), ("delta", next_obs - obs)):
+        if len(obs) == 0 or not torch.isfinite(obs).all():
+            raise ValueError("Normalization requires nonempty, finite training data")
+        if normalize_observation:
+            obs_mean = obs.mean(dim=0)
+            obs_std = obs.std(dim=0, unbiased=False)
+            obs_std = torch.where(obs_std < eps, torch.ones_like(obs_std), obs_std)
+            self.obs_mean.copy_(obs_mean)
+            self.obs_std.copy_(obs_std)
+        else:
+            self.obs_mean.zero_()
+            self.obs_std.fill_(1)
+        for name, values in (("action", action), ("delta", next_obs - obs)):
             if len(values) == 0 or not torch.isfinite(values).all():
                 raise ValueError("Normalization requires nonempty, finite training data")
             mean = values.mean(dim=0)
@@ -75,7 +95,7 @@ class ProbDynamics(nn.Module):
         return mean, log_std
 
     def forward(self, obs: torch.Tensor, action: torch.Tensor):
-        """Return (mean_delta, log_std_delta) in original observation units."""
+        """Return delta distribution in the ensemble's observation space."""
         mean, log_std = self._forward_raw(obs, action)
         return mean * self.delta_std + self.delta_mean, log_std + self.delta_std.log()
 
@@ -113,6 +133,7 @@ class DynamicsEnsemble(nn.Module):
         log_std_min: float = -10.0,
         log_std_max: float = 2.0,
         effective_obs_dim: Optional[int] = None,
+        observation_space: str = "raw",
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
@@ -120,6 +141,9 @@ class DynamicsEnsemble(nn.Module):
         self.N = N
         self.hidden_dim = hidden_dim
         self.hidden_depth = hidden_depth
+        if observation_space not in ("raw", "policy_normalized"):
+            raise ValueError(f"Unsupported dynamics observation space: {observation_space}")
+        self.observation_space = observation_space
         # When set, the model only operates on the first effective_obs_dim dims
         # and pads the rest with zeros on output.
         self.effective_obs_dim = effective_obs_dim or obs_dim
@@ -186,9 +210,15 @@ class DynamicsEnsemble(nn.Module):
             out[:, i] = s_next_full
         return out
 
-    def save(self, path: str, training_metadata: Optional[dict] = None) -> None:
+    def save(
+        self, path: str, training_metadata: Optional[dict] = None,
+        observation_normalizer: Optional[str] = None,
+    ) -> None:
+        if self.observation_space == "policy_normalized" and not observation_normalizer:
+            raise ValueError(
+                "Policy-normalized dynamics require an observation normalizer artifact")
         payload = {
-            "format_version": 2,
+            "format_version": 3,
             "state_dict": self.state_dict(),
             "cfg": {
                 "obs_dim": self.obs_dim,
@@ -197,6 +227,8 @@ class DynamicsEnsemble(nn.Module):
                 "effective_obs_dim": self.effective_obs_dim,
                 "hidden_dim": self.hidden_dim,
                 "hidden_depth": self.hidden_depth,
+                "observation_space": self.observation_space,
+                "observation_normalizer": observation_normalizer,
             },
             "training_metadata": training_metadata or {},
         }
@@ -204,36 +236,22 @@ class DynamicsEnsemble(nn.Module):
 
     def load(self, path: str, map_location: Optional[str] = None) -> None:
         payload = torch.load(path, map_location=map_location)
-        if isinstance(payload, dict) and "state_dict" in payload:
-            cfg = payload.get("cfg", {})
-            if cfg:
-                assert cfg.get("action_dim") == self.action_dim, (
-                    f"action_dim mismatch: ckpt={cfg.get('action_dim')} vs module={self.action_dim}"
-                )
-                assert cfg.get("N") == self.N, (
-                    f"ensemble size mismatch: ckpt N={cfg.get('N')} vs module N={self.N}"
-                )
-                ckpt_eff = cfg.get("effective_obs_dim", cfg.get("obs_dim"))
-                assert ckpt_eff == self.effective_obs_dim, (
-                    f"effective_obs_dim mismatch: ckpt={ckpt_eff} vs module={self.effective_obs_dim}"
-                )
-            state_dict = payload["state_dict"]
-        else:
-            # backward compat: raw state dict
-            state_dict = payload
-        normalization_keys = [f"members.{i}.{name}_{stat}" for i in range(self.N)
-                              for name in ("obs", "action", "delta")
-                              for stat in ("mean", "std")]
-        # Only genuinely old checkpoints may omit all normalization buffers.
-        # A partially missing set in a new checkpoint is an error, not an identity fallback.
-        if not any(key in state_dict for key in normalization_keys) and (
-                not isinstance(payload, dict) or payload.get("format_version", 1) < 2):
-            state_dict = dict(state_dict)
-            defaults = self.state_dict()
-            for key in normalization_keys:
-                state_dict[key] = (torch.ones_like(defaults[key]) if key.endswith("_std")
-                                   else torch.zeros_like(defaults[key]))
-        self.load_state_dict(state_dict)
+        if (not isinstance(payload, dict) or payload.get("format_version") != 3
+                or "state_dict" not in payload or "cfg" not in payload):
+            raise ValueError("Dynamics checkpoint format 3 is required; retrain the dynamics model")
+        cfg = payload["cfg"]
+        expected = {
+            "obs_dim": self.obs_dim,
+            "action_dim": self.action_dim,
+            "N": self.N,
+            "effective_obs_dim": self.effective_obs_dim,
+            "observation_space": self.observation_space,
+        }
+        for name, value in expected.items():
+            if cfg.get(name) != value:
+                raise ValueError(
+                    f"{name} mismatch: ckpt={cfg.get(name)!r} vs module={value!r}")
+        self.load_state_dict(payload["state_dict"])
 
 
 def load_iq_dynamics(agent, obs_dim, action_dim):
@@ -251,6 +269,9 @@ def load_iq_dynamics(agent, obs_dim, action_dim):
         raise ValueError('Dynamics-based IQ losses require method.dynamics_ckpt; run train_dynamics.py first')
     path = hydra.utils.to_absolute_path(method.dynamics_ckpt)
     payload = torch.load(path, map_location='cpu')
+    if (not isinstance(payload, dict) or payload.get('format_version') != 3
+            or 'state_dict' not in payload or 'cfg' not in payload):
+        raise ValueError('Dynamics checkpoint format 3 is required; retrain with train_dynamics.py')
     dataset = payload.get('training_metadata', {}).get('dataset', {}) if isinstance(payload, dict) else {}
     robosuite = getattr(args, 'robosuite', None)
     if robosuite is not None and dataset:
@@ -260,8 +281,27 @@ def load_iq_dynamics(agent, obs_dim, action_dim):
             raise ValueError('Dynamics checkpoint observation order does not match robosuite.obs_keys')
         if payload.get('cfg', {}).get('obs_dim') != obs_dim:
             raise ValueError('Dynamics checkpoint observation dimension does not match Robosuite IQ')
-    cfg = payload.get('cfg', {}) if isinstance(payload, dict) else {}
-    state_dict = payload.get('state_dict', payload)
+    cfg = payload['cfg']
+    state_dict = payload['state_dict']
+    observation_space = cfg.get('observation_space')
+    normalizer = getattr(agent, 'observation_normalizer', None)
+    if robosuite is None:
+        if observation_space != 'policy_normalized':
+            raise ValueError('MuJoCo IQ requires a policy-normalized dynamics checkpoint')
+        if normalizer is None:
+            raise ValueError('Policy-normalized dynamics require observation normalization in IQ')
+        artifact = cfg.get('observation_normalizer')
+        if not artifact or os.path.basename(artifact) != artifact:
+            raise ValueError('Dynamics checkpoint has an invalid observation normalizer artifact')
+        from pathlib import Path
+        from utils.observation_normalizer import ObservationNormalizer
+        artifact_path = Path(path).resolve().parent / artifact
+        if not artifact_path.is_file():
+            raise FileNotFoundError(
+                f'Dynamics observation normalizer artifact not found: {artifact_path}')
+        normalizer.assert_compatible(ObservationNormalizer.load(artifact_path))
+    elif observation_space != 'raw':
+        raise ValueError('Robosuite requires a raw-observation dynamics checkpoint')
     hidden_dim = cfg.get('hidden_dim')
     if hidden_dim is None:
         hidden_dim = state_dict['members.0.trunk.0.weight'].shape[0]
@@ -273,9 +313,9 @@ def load_iq_dynamics(agent, obs_dim, action_dim):
         obs_dim, action_dim, N=int(method.penalty_N),
         effective_obs_dim=cfg.get('effective_obs_dim'),
         hidden_dim=hidden_dim, hidden_depth=hidden_depth,
+        observation_space=observation_space,
     ).to(args.device)
     ensemble.load(path, map_location=args.device)
-    normalizer = getattr(agent, 'observation_normalizer', None)
     if normalizer is not None:
         if normalizer.obs_dim != obs_dim:
             raise ValueError(

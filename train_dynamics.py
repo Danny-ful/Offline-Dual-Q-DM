@@ -1,7 +1,7 @@
-"""Train normalized dynamics with fixed member bootstraps and trajectory holdout.
+"""Train policy-normalized dynamics with fixed bootstraps and holdout.
 
 Uses the same ExpertDataset selection/subsampling as IQ, retaining trajectory IDs.
-Public model predictions and samples remain in original observation units.
+Public model inputs and outputs use the policy-normalized observation space.
 """
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ import torch
 from omegaconf import DictConfig, OmegaConf
 
 from dataset.expert_dataset import ExpertDataset
+from utils.observation_normalizer import (
+    build_observation_normalizer,
+    normalizer_checkpoint_path,
+)
 
 
 def _build_dataset(cfg: DictConfig, seed: int, obs_dim=None, action_dim=None,
@@ -124,7 +128,10 @@ def _validation_losses(ensemble, obs, actions, next_obs, indices, batch_size):
     return losses
 
 
-def _train_ensemble(ensemble, obs, actions, next_obs, train_idx, val_idx, dyn_cfg, seed):
+def _train_ensemble(
+    ensemble, obs, actions, next_obs, train_idx, val_idx, dyn_cfg, seed,
+    *, normalize_observation=True,
+):
     epochs = int(dyn_cfg.get("epochs", 100))
     batch_size = int(dyn_cfg.get("batch_size", 256))
     log_interval = int(dyn_cfg.get("log_interval", 5))
@@ -132,7 +139,9 @@ def _train_ensemble(ensemble, obs, actions, next_obs, train_idx, val_idx, dyn_cf
         raise ValueError("epochs, batch_size, log_interval and training size must be positive")
     eps = float(dyn_cfg.get("normalization_eps", 1e-6))
     # Shared training statistics, independent resamples and optimization per member.
-    ensemble.members[0].fit_normalization(obs[train_idx], actions[train_idx], next_obs[train_idx], eps)
+    ensemble.members[0].fit_normalization(
+        obs[train_idx], actions[train_idx], next_obs[train_idx], eps,
+        normalize_observation=normalize_observation)
     for member in ensemble.members[1:]:
         for name, value in ensemble.members[0].named_buffers():
             getattr(member, name).copy_(value)
@@ -236,7 +245,8 @@ def _diagnostics(ensemble, obs, actions, next_obs, val_idx, trajectory_ids, sour
     """One-step holdout error vs variance of deterministic member means.
 
     Aleatoric variance is separate; random samples never enter disagreement.
-    Normalized metrics use the training delta scale so features are comparable.
+    Metrics are in policy-normalized observation units. The secondary normalized
+    metrics also divide by the dynamics training-delta scale.
     """
     if batch_size < 1 or bins < 1:
         raise ValueError("Diagnostic batch size and bins must be positive")
@@ -314,6 +324,27 @@ def main(cfg: DictConfig) -> None:
         raise ValueError("Invalid effective_obs_dim or ensemble size")
     obs, actions, next_obs, trajectory_ids, sources = _build_dataset(
         cfg, cfg.seed, obs_dim, action_dim, original_obs_dim)
+    obs_norm_cfg = getattr(cfg, "observation_normalization", None)
+    if obs_norm_cfg is None or not bool(getattr(obs_norm_cfg, "enabled", False)):
+        raise ValueError("MuJoCo dynamics require observation_normalization.enabled=true")
+    if getattr(obs_norm_cfg, "stats_path", None):
+        raise ValueError(
+            "train_dynamics.py creates the authoritative observation normalizer; "
+            "observation_normalization.stats_path must be null")
+    supplement_mask = sources == "supplement"
+    observation_normalizer = build_observation_normalizer(
+        obs_norm_cfg,
+        obs[supplement_mask],
+        metadata={
+            "source": "supplement",
+            "environment": cfg.env.name,
+            "transition_count": int(supplement_mask.sum()),
+            "subsample_freq": int(cfg.expert.subsample_freq),
+            "reduce_obs_dim": obs_dim if original_obs_dim != obs_dim else None,
+        },
+    )
+    obs = observation_normalizer.normalize_np(obs)
+    next_obs = observation_normalizer.normalize_np(next_obs)
     obs = obs[:, :effective_obs_dim]
     next_obs = next_obs[:, :effective_obs_dim]
     train_idx, val_idx = _split_trajectories(trajectory_ids, sources, float(dyn_cfg.get("val_frac", .05)), cfg.seed)
@@ -324,10 +355,13 @@ def main(cfg: DictConfig) -> None:
     ensemble = DynamicsEnsemble(obs_dim, action_dim, N=N,
                                 hidden_dim=int(dyn_cfg.get("hidden_dim", 256)),
                                 hidden_depth=int(dyn_cfg.get("hidden_depth", 3)),
-                                effective_obs_dim=effective_obs_dim).to(cfg.device)
+                                effective_obs_dim=effective_obs_dim,
+                                observation_space="policy_normalized").to(cfg.device)
     print(f"--> train={len(train_idx)} val={len(val_idx)} transitions | "
           f"train={len(np.unique(trajectory_ids[train_np]))} val={len(np.unique(trajectory_ids[val_np]))} trajectories")
-    training = _train_ensemble(ensemble, obs_t, act_t, next_t, train_idx, val_idx, dyn_cfg, cfg.seed)
+    training = _train_ensemble(
+        ensemble, obs_t, act_t, next_t, train_idx, val_idx, dyn_cfg, cfg.seed,
+        normalize_observation=False)
     diagnostics, samples = _diagnostics(ensemble, obs_t, act_t, next_t, val_idx, trajectory_ids, sources,
                                         int(dyn_cfg.get("batch_size", 256)), int(dyn_cfg.get("diagnostic_bins", 10)))
     training["split"] = {"unit": "trajectory", "val_frac": float(dyn_cfg.get("val_frac", .05)),
@@ -338,13 +372,22 @@ def main(cfg: DictConfig) -> None:
     save_dir = hydra.utils.to_absolute_path(f"dynamics/{demo_stem}")
     os.makedirs(save_dir, exist_ok=True)
     stem = os.path.join(save_dir, f"ensemble_{N}")
-    ensemble.save(stem + ".pt", training_metadata=training)
+    normalizer_path = normalizer_checkpoint_path(stem)
+    observation_normalizer.save(normalizer_path)
+    training["observation_normalization"] = {
+        **observation_normalizer.summary(),
+        "artifact": os.path.basename(normalizer_path),
+    }
+    ensemble.save(
+        stem + ".pt", training_metadata=training,
+        observation_normalizer=os.path.basename(normalizer_path))
     with open(stem + "_diagnostics.json", "w") as stream:
         json.dump({"training": training, "validation": diagnostics}, stream, indent=2, allow_nan=False)
     np.savez_compressed(stem + "_validation.npz", train_indices=train_np, val_indices=val_np, **samples)
     if diagnostics["status"] == "ok":
         print(f"--> Validation diagnostics: {json.dumps(diagnostics['overall'])}")
-    print(f"--> Saved {stem}.pt, {stem}_diagnostics.json and {stem}_validation.npz")
+    print(f"--> Saved {stem}.pt, {normalizer_path}, {stem}_diagnostics.json "
+          f"and {stem}_validation.npz")
 
 
 if __name__ == "__main__":

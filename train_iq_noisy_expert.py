@@ -33,7 +33,11 @@ from iq import iq_loss, prepare_iq_step, update_iq_penalty, synthetic_iq_loss
 from tqdm import tqdm
 import pickle
 from dataset.expert_dataset import ExpertDataset
-from utils.observation_normalizer import NormalizedReplayView, build_observation_normalizer
+from utils.observation_normalizer import (
+    NormalizedReplayView,
+    build_observation_normalizer,
+    normalizer_checkpoint_path,
+)
 from wrappers.normalize_observation_wrapper import NormalizeObservationWrapper
 
 torch.set_num_threads(2)
@@ -221,6 +225,25 @@ def main(cfg: DictConfig):
         stats_path = getattr(obs_norm_cfg, "stats_path", None) if obs_norm_cfg is not None else None
         if stats_path:
             stats_path = hydra.utils.to_absolute_path(stats_path)
+        uses_dynamics = (getattr(args.method, "uncertainty", False)
+                         or getattr(args.method, "synthetic_constrain", False))
+        if uses_dynamics:
+            if obs_norm_cfg is None or not bool(getattr(obs_norm_cfg, "enabled", False)):
+                raise ValueError(
+                    "Dynamics-based IQ requires observation_normalization.enabled=true")
+            if not args.method.dynamics_ckpt:
+                raise ValueError("Dynamics-based IQ requires method.dynamics_ckpt")
+            dynamics_path = hydra.utils.to_absolute_path(args.method.dynamics_ckpt)
+            expected_stats_path = normalizer_checkpoint_path(
+                os.path.splitext(dynamics_path)[0])
+            if not stats_path:
+                raise ValueError(
+                    "Set observation_normalization.stats_path to the dynamics artifact: "
+                    f"{expected_stats_path}")
+            if os.path.realpath(stats_path) != os.path.realpath(expected_stats_path):
+                raise ValueError(
+                    "observation_normalization.stats_path must use the normalizer saved "
+                    f"beside the dynamics checkpoint: {expected_stats_path}")
         observation_normalizer = build_observation_normalizer(
             obs_norm_cfg,
             online_memory_replay.raw_observations(),
@@ -244,8 +267,7 @@ def main(cfg: DictConfig):
         agent = make_agent(env, args)
         agent.observation_normalizer = observation_normalizer
 
-        if (getattr(args.method, "uncertainty", False)
-                or getattr(args.method, "synthetic_constrain", False)):
+        if uses_dynamics:
             from agent.dynamics_ensemble import load_iq_dynamics
             load_iq_dynamics(agent, env.observation_space.shape[0], env.action_space.shape[0])
 
@@ -268,8 +290,6 @@ def main(cfg: DictConfig):
         )
 
         writer = SummaryWriter(log_dir=log_dir)
-        if observation_normalizer is not None:
-            observation_normalizer.save(os.path.join(log_dir, "observation_normalizer.npz"))
         print(f'--> Saving logs at: {log_dir}')
 
         logger = Logger(log_dir,

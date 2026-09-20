@@ -25,15 +25,20 @@ class DynamicsTrainingTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(7)
 
-    def test_normalization_and_original_unit_sampling(self):
-        ensemble = model.DynamicsEnsemble(3, 1, N=1, effective_obs_dim=2, hidden_depth=0)
+    def test_policy_observation_identity_and_action_delta_normalization(self):
+        ensemble = model.DynamicsEnsemble(
+            3, 1, N=1, effective_obs_dim=2, hidden_depth=0,
+            observation_space='policy_normalized')
         member = ensemble.members[0]
-        obs = torch.tensor([[1., 8.], [5., 8.]])
+        obs = torch.tensor([[-1., 0.], [1., 0.]])
         actions = torch.tensor([[2.], [6.]])
         next_obs = obs + torch.tensor([[2., 3.], [6., 3.]])
-        member.fit_normalization(obs, actions, next_obs)
-        torch.testing.assert_close(member.obs_mean, torch.tensor([3., 8.]))
-        torch.testing.assert_close(member.obs_std, torch.tensor([2., 1.]))
+        member.fit_normalization(
+            obs, actions, next_obs, normalize_observation=False)
+        torch.testing.assert_close(member.obs_mean, torch.zeros(2))
+        torch.testing.assert_close(member.obs_std, torch.ones(2))
+        torch.testing.assert_close(member.action_mean, torch.tensor([4.]))
+        torch.testing.assert_close(member.action_std, torch.tensor([2.]))
         torch.testing.assert_close(member.delta_std, torch.tensor([2., 1.]))
         with torch.no_grad():
             member.trunk[0].weight.zero_()
@@ -52,7 +57,7 @@ class DynamicsTrainingTests(unittest.TestCase):
         with patch('torch.randn_like', side_effect=lambda x: torch.ones_like(x)):
             torch.testing.assert_close(member.sample_next(obs, actions), samples[:, 0, 0, :2])
 
-    def test_checkpoint_roundtrip_legacy_and_corruption(self):
+    def test_checkpoint_roundtrip_and_old_format_rejection(self):
         source = model.DynamicsEnsemble(2, 1, N=2, hidden_dim=7, hidden_depth=1)
         obs, act = torch.randn(6, 2), torch.randn(6, 1)
         for member in source.members:
@@ -71,13 +76,12 @@ class DynamicsTrainingTests(unittest.TestCase):
             torch.save(payload, path)
             with self.assertRaises(RuntimeError):
                 target.load(path)
-            identity = model.DynamicsEnsemble(2, 1, N=2, hidden_dim=7, hidden_depth=1)
-            old_state = {k: v for k, v in identity.state_dict().items()
-                         if not k.endswith(('_mean', '_std')) or k.endswith(('max_log_std', 'min_log_std'))}
-            for old_payload in (old_state, {'state_dict': old_state, 'cfg': {'obs_dim': 2, 'action_dim': 1, 'N': 2}}):
+            for old_payload in (source.state_dict(), {
+                    'format_version': 2, 'state_dict': source.state_dict(),
+                    'cfg': {'obs_dim': 2, 'action_dim': 1, 'N': 2}}):
                 torch.save(old_payload, path)
-                target.load(path)
-                torch.testing.assert_close(target(0, obs, act), identity(0, obs, act))
+                with self.assertRaisesRegex(ValueError, 'format 3'):
+                    target.load(path)
 
     def test_trajectory_split_no_leakage_and_singletons(self):
         ids = np.array(['expert:0'] * 4 + ['supplement:0'] * 2 + ['supplement:1'] * 3)
@@ -118,7 +122,9 @@ class DynamicsTrainingTests(unittest.TestCase):
         with patch.object(ensemble.members[0], 'nll_loss', side_effect=recorder(0)), \
                 patch.object(ensemble.members[1], 'nll_loss', side_effect=recorder(1)), \
                 patch.object(training, '_validation_losses', side_effect=validation):
-            result = training._train_ensemble(ensemble, obs, act, nxt, train_idx, val_idx, cfg, 11)
+            result = training._train_ensemble(
+                ensemble, obs, act, nxt, train_idx, val_idx, cfg, 11,
+                normalize_observation=False)
         self.assertEqual(result['best_epochs'], [1, 2])
         for i, best_epoch in enumerate([0, 1]):
             for key, value in ensemble.members[i].state_dict().items():
@@ -127,7 +133,8 @@ class DynamicsTrainingTests(unittest.TestCase):
             self.assertEqual(chunks[0], chunks[1])
             self.assertEqual(chunks[0], chunks[2])
             self.assertLess(max(seen[i]), 8)
-            torch.testing.assert_close(ensemble.members[i].obs_mean, obs[:8].mean(0))
+            torch.testing.assert_close(ensemble.members[i].obs_mean, torch.zeros(1))
+            torch.testing.assert_close(ensemble.members[i].obs_std, torch.ones(1))
         draws = training._fixed_bootstrap(train_idx, 2, 1011)
         self.assertFalse(torch.equal(draws[0], draws[1]))
         for i in range(2):
@@ -211,15 +218,20 @@ class DynamicsTrainingTests(unittest.TestCase):
     def _check_training_entrypoint(self, obs_dim, raw_obs_dim, agent_config='sac'):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            data = dict(states=[], next_states=[], actions=[], rewards=[], dones=[], lengths=[])
-            for i in range(4):
-                obs = np.arange(6 * raw_obs_dim, dtype=np.float32).reshape(6, raw_obs_dim) / 10 + i
-                for key, value in dict(states=obs, next_states=obs + .2, actions=obs[:, :1] / 10,
-                                       rewards=np.zeros(6), dones=np.zeros(6), lengths=6).items():
-                    data[key].append(value)
-            for name in ('expert', 'supplement'):
+            supplement_states = None
+            for name, source_offset in (('expert', 0.), ('supplement', 100.)):
+                data = dict(states=[], next_states=[], actions=[], rewards=[], dones=[], lengths=[])
+                for i in range(4):
+                    obs = (np.arange(6 * raw_obs_dim, dtype=np.float32).reshape(6, raw_obs_dim) / 10
+                           + i + source_offset)
+                    for key, value in dict(states=obs, next_states=obs + .2,
+                                           actions=obs[:, :1] / 10,
+                                           rewards=np.zeros(6), dones=np.zeros(6), lengths=6).items():
+                        data[key].append(value)
                 with (root / (name + '.pkl')).open('wb') as stream:
                     pickle.dump(data, stream)
+                if name == 'supplement':
+                    supplement_states = np.concatenate(data['states'])[:, :obs_dim]
             # Keep real mandatory dimensions and interpolations to exercise
             # configuration resolution when saving training metadata.
             with initialize_config_dir(version_base=None, config_dir=str(
@@ -252,8 +264,21 @@ class DynamicsTrainingTests(unittest.TestCase):
                 self.assertEqual(saved_config[section]['action_dim'], 1)
             checkpoint = torch.load(str(stem) + '.pt', weights_only=True)
             self.assertEqual(checkpoint['training_metadata']['config'], saved_config)
-            loaded = model.DynamicsEnsemble(obs_dim, 1, N=2, hidden_dim=8, hidden_depth=1)
+            self.assertEqual(checkpoint['format_version'], 3)
+            self.assertEqual(checkpoint['cfg']['observation_space'], 'policy_normalized')
+            normalizer_path = Path(str(stem) + '_obs_normalizer.npz')
+            self.assertTrue(normalizer_path.is_file())
+            with np.load(normalizer_path, allow_pickle=False) as normalizer:
+                self.assertEqual(normalizer['mean'].shape, (obs_dim,))
+                np.testing.assert_allclose(
+                    normalizer['mean'], supplement_states.mean(axis=0), rtol=1e-6)
+            loaded = model.DynamicsEnsemble(
+                obs_dim, 1, N=2, hidden_dim=8, hidden_depth=1,
+                observation_space='policy_normalized')
             loaded.load(str(stem) + '.pt')
+            for member in loaded.members:
+                torch.testing.assert_close(member.obs_mean, torch.zeros(obs_dim))
+                torch.testing.assert_close(member.obs_std, torch.ones(obs_dim))
             self.assertEqual(len(report['training']['best_epochs']), 2)
             with np.load(str(stem) + '_validation.npz') as samples:
                 self.assertEqual(len(samples['val_indices']), len(samples['mse']))

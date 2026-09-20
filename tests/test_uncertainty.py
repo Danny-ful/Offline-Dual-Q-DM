@@ -100,7 +100,7 @@ class UncertaintyTests(unittest.TestCase):
         torch.testing.assert_close(gamma[0], torch.zeros(1))
         torch.testing.assert_close(gamma[1:], expected.expand(3, 1))
 
-    def test_normalized_policy_states_are_denormalized_for_dynamics(self):
+    def test_normalized_policy_states_are_passed_directly_to_dynamics(self):
         agent, batch = fixture((-1., 0., 1.))
         agent.critic_target.action_sensitive = False
         raw_obs = batch[0].clone()
@@ -112,7 +112,7 @@ class UncertaintyTests(unittest.TestCase):
         with patch.object(agent.dynamics_ensemble, 'sample_next_ensemble',
                           wraps=agent.dynamics_ensemble.sample_next_ensemble) as sample:
             iq._compute_dynamics_penalty(agent, normalized_batch)
-        torch.testing.assert_close(sample.call_args.args[0], raw_obs)
+        torch.testing.assert_close(sample.call_args.args[0], normalized_obs)
 
     def test_shared_noise_padding_and_resampling(self):
         agent, batch = fixture()

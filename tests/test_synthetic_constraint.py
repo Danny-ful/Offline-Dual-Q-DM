@@ -119,7 +119,7 @@ class SyntheticConstraintTests(unittest.TestCase):
         torch.testing.assert_close(loss, expected)
         self.assertEqual(logs['synthetic/terminal_fraction'], 0.5)
 
-    def test_normalized_synthetic_path_uses_raw_dynamics_and_termination(self):
+    def test_normalized_synthetic_path_uses_normalized_dynamics_and_raw_termination(self):
         agent, batch = synthetic_fixture()
         agent.args.env.name = 'Ant-v2'
         agent.args.method.uncertainty = False
@@ -131,10 +131,11 @@ class SyntheticConstraintTests(unittest.TestCase):
         raw_next = torch.zeros(4, 2, agent.args.method.synthetic_M, 2)
         raw_next[:, 0, :, 0] = 0.5
         raw_next[:, 1, :, 0] = 1.5
+        normalized_next = normalizer.normalize_tensor(raw_next)
         with patch.object(agent.dynamics_ensemble, 'sample_next_ensemble',
-                          return_value=raw_next) as sample:
+                          return_value=normalized_next) as sample:
             _, logs = iq.synthetic_iq_loss(agent, normalized_obs, 1, True)
-        torch.testing.assert_close(sample.call_args.args[0], raw_obs)
+        torch.testing.assert_close(sample.call_args.args[0], normalized_obs)
         self.assertEqual(logs['synthetic/terminal_fraction'], 0.5)
 
     def test_termination_boundaries(self):
@@ -193,9 +194,16 @@ class SyntheticConstraintTests(unittest.TestCase):
                 agent.args.device = 'cpu'
                 agent.args.method.uncertainty = False
                 agent.args.method.dynamics_ckpt = str(Path(directory) / 'model.pt')
+                normalizer = ObservationNormalizer(mean=[0., 0.], std=[1., 1.])
+                agent.observation_normalizer = normalizer
+                normalizer_path = Path(directory) / 'model_obs_normalizer.npz'
+                normalizer.save(normalizer_path)
                 source = module.DynamicsEnsemble(2, 1, N=2, effective_obs_dim=1,
-                                                 hidden_dim=8, hidden_depth=depth)
-                source.save(agent.args.method.dynamics_ckpt)
+                                                 hidden_dim=8, hidden_depth=depth,
+                                                 observation_space='policy_normalized')
+                source.save(
+                    agent.args.method.dynamics_ckpt,
+                    observation_normalizer=normalizer_path.name)
                 del agent.dynamics_ensemble
                 module.load_iq_dynamics(agent, 2, 1)
                 loaded = agent.dynamics_ensemble

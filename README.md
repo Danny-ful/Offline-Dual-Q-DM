@@ -89,15 +89,15 @@ normalized_observation = (observation - mean) / (std + 1e-3)
 
 The same immutable statistics are applied to expert batches, supplement batches,
 and observations from both the training and evaluation environments. Offline
-replay data remain in original units. Dynamics ensembles also keep their existing
-raw-unit interface: policy observations are converted back to raw units before
-model inference, model predictions and synthetic termination checks stay in raw
-units, and predicted next observations are normalized before actor or critic
-evaluation.
+replay data remain in original units. MuJoCo dynamics ensembles use this same
+policy-normalized observation space directly for both inputs and outputs. Only
+synthetic termination checks temporarily convert predicted next observations
+back to raw physical units.
 
-Each run writes `observation_normalizer.npz` in its log directory, and agent
-checkpoints write a matching `*_obs_normalizer.npz` sidecar. `test_iq.py` loads the
-sidecar automatically; alternatively set
+Standard IQ runs write `observation_normalizer.npz` in their log directory, and
+agent checkpoints write a matching `*_obs_normalizer.npz` sidecar. Dynamics-based
+noisy-expert training instead uses the single normalizer saved beside the dynamics
+checkpoint. `test_iq.py` loads agent sidecars automatically; alternatively set
 `observation_normalization.stats_path=/absolute/path/to/observation_normalizer.npz`.
 Checkpoint loading verifies that the active statistics match the sidecar. To load
 an old checkpoint intentionally, either disable normalization with
@@ -217,16 +217,23 @@ its validation metrics are explicitly unavailable. If neither source can supply
 a holdout trajectory, increase the number of trajectories or explicitly disable
 validation with `dyn.val_frac=0` (which saves final weights without best selection).
 
-Observation, action and delta-state statistics are fitted on training transitions
-only. Each member gets one fixed bootstrap resample, shuffled each epoch. Every
-epoch is validated using normalized Gaussian NLL without the bound regularizer;
-each member's lowest-NLL weights are restored independently before saving.
-Normalization buffers and architecture are saved in the checkpoint. Inference,
-including stochastic sampling for IQ, returns original observation units.
-Old checkpoints load with identity normalization; retrain to get the new behavior.
+The fixed policy observation normalizer is fitted from all selected supplement
+current states, using the same `(x - mean) / (std + 1e-3)` transform as IQ. Both
+current and next observations are transformed before dynamics training. The
+dynamics model does not standardize observations a second time; action and
+delta-state statistics are still fitted on training transitions for numerical
+conditioning. Each member gets one fixed bootstrap resample, shuffled each epoch.
+Every epoch is validated using normalized Gaussian NLL without the bound
+regularizer; each member's lowest-NLL weights are restored independently before
+saving. Dynamics inputs, predictions and samples remain in policy-normalized
+observation units. Checkpoint format 3 is required; older dynamics checkpoints
+must be retrained.
 
 Outputs are `dynamics/<demo-stem>/ensemble_<N>.pt`,
-`ensemble_<N>_diagnostics.json` and `ensemble_<N>_validation.npz`. The JSON contains
+`ensemble_<N>_obs_normalizer.npz`, `ensemble_<N>_diagnostics.json` and
+`ensemble_<N>_validation.npz`. Use the saved normalizer for IQ with
+`observation_normalization.stats_path=dynamics/<demo-stem>/ensemble_<N>_obs_normalizer.npz`.
+The JSON contains
 training history, selected epochs, split IDs, and aggregate, per-source and
 per-trajectory one-step validation metrics. MSE measures the ensemble mean error;
 disagreement measures variance across deterministic member means (`unbiased=False`).
@@ -317,11 +324,13 @@ with its dataset paths:
 ```bash
 method.constrain=True method.synthetic_constrain=True method.synthetic_M=1 \
 method.synthetic_coef=0.1 method.synthetic_warmup_steps=10000 \
-method.dynamics_ckpt=/absolute/path/to/ensemble_5.pt
+method.dynamics_ckpt=/absolute/path/to/ensemble_5.pt \
+observation_normalization.stats_path=/absolute/path/to/ensemble_5_obs_normalizer.npz
 ```
 
-The model checkpoint must use the same observation layout and action scaling as
-the training dataset. `penalty_N` must match the checkpoint. `synthetic_M`
+The model checkpoint must use the same observation layout, saved observation
+normalizer and action scaling as the training dataset. `penalty_N` must match the
+checkpoint. `synthetic_M`
 (default 1) controls next-state samples per member for the auxiliary branch;
 `penalty_M` (default 10) independently controls real-batch uncertainty sampling.
 The model loads even when `uncertainty=False`.

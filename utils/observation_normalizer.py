@@ -173,16 +173,6 @@ class NormalizedReplayView:
         return getattr(self.replay, name)
 
 
-def policy_to_raw_observation(agent, observations: torch.Tensor) -> torch.Tensor:
-    normalizer = getattr(agent, "observation_normalizer", None)
-    return observations if normalizer is None else normalizer.denormalize_tensor(observations)
-
-
-def raw_to_policy_observation(agent, observations: torch.Tensor) -> torch.Tensor:
-    normalizer = getattr(agent, "observation_normalizer", None)
-    return observations if normalizer is None else normalizer.normalize_tensor(observations)
-
-
 def normalizer_checkpoint_path(base_path: str, suffix: str = "") -> str:
     return f"{base_path}{suffix}_obs_normalizer.npz"
 

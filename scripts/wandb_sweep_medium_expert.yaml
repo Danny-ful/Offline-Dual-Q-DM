@@ -40,6 +40,7 @@ command:
   - method.penalty_auto=True
   - method.penalty_N=5
   - method.dynamics_ckpt=dynamics/ant_medium_expert-v2/ensemble_5.pt
+  - observation_normalization.stats_path=dynamics/ant_medium_expert-v2/ensemble_5_obs_normalizer.npz
   - ${args_no_hyphens}
   - q_net._target_=agent.sac_models.DoubleQCritic
   - env.learn_steps=8e5
