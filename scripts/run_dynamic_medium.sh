@@ -107,9 +107,9 @@ find /usr/include /home/ubuntu/shengyifei/lwq/runtime \
 
 
 # --- 4) Train all four dynamics ensembles sequentially ---
-# Example: DATASET_VARIANT=medium_expert-v2 bash scripts/run_dynamic.sh
+# Example: DATASET_VARIANT=medium-v2 bash scripts/run_dynamic_medium.sh
 # Extra arguments are forwarded to every run, e.g. dyn.epochs=100 seed=1.
-DATASET_VARIANT="${DATASET_VARIANT:-medium_expert-v2}"
+DATASET_VARIANT="${DATASET_VARIANT:-medium-v2}"
 # ENV_NAMES=(ant cheetah hopper walker)
 # DATASET_PREFIXES=(ant halfcheetah hopper walker2d)
 ENV_NAMES=(ant halfcheetah hopper walker2d)

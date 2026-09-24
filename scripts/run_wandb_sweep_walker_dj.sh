@@ -1,45 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Walker WandB Sweep Script for Offline-Dual-Q-DM-DJ
 # Usage:
-#   bash scripts/run_wandb_sweep_medium_expert.sh
+#   bash scripts/run_wandb_sweep_walker_dj.sh
 # Optional environment variables:
 #   WANDB_ENTITY=wenqilaid-nanjing-university
-#   WANDB_PROJECT=Offline-Dual-Q-DM-medium-Expert
+#   WANDB_PROJECT=Offline-Dual-Q-DM-DJ
 #   NUM_AGENTS=3
-#   SWEEP_CONFIG=scripts/wandb_sweep_medium_expert.yaml
-#   SWEEP_LOG=scripts/sweep_ids_medium_expert.log
-#   EXISTING_SWEEP_ID=           # set non-empty to skip creating a new sweep
-#   AUTO_REUSE_SWEEP=1           # if config unchanged, reuse last sweep_id
-#   SWEEP_STATE_FILE=scripts/.sweep_state_medium_expert.env
-#   AGENT_LAUNCH_STAGGER_SECONDS=1  # delay between agent launches
-# Actor LR scheduling is configured in scripts/wandb_sweep_medium_expert.yaml:
-#   actor_lr_scheduler.enabled
-#   actor_lr_scheduler.final_lr
-#   actor_lr_scheduler.anneal_updates  # actor optimizer steps, not learn steps
+#   SWEEP_CONFIG=scripts/wandb_sweep_walker.yaml
 
 export USER=ubuntu
 export HOME=/home/ubuntu
-PROJECT_ROOT="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
+PROJECT_ROOT="/home/ubuntu/shengyifei/lwq/Offline-Dual-Q-DM"
 cd "$PROJECT_ROOT"
 
-CONDA_PROFILE="/home/ubuntu/laiwenqi/anaconda3/etc/profile.d/conda.sh"
+CONDA_PROFILE="/home/ubuntu/shengyifei/anaconda3/etc/profile.d/conda.sh"
 ALT_CONDA_PROFILE="/home/ubuntu/anaconda3/etc/profile.d/conda.sh"
 if [ -f "$CONDA_PROFILE" ]; then
-  # shellcheck source=/dev/null
   source "$CONDA_PROFILE"
 elif [ -f "$ALT_CONDA_PROFILE" ]; then
-  # shellcheck source=/dev/null
   source "$ALT_CONDA_PROFILE"
 else
-  echo "conda.sh not found. Checked:"
-  echo "  $CONDA_PROFILE"
-  echo "  $ALT_CONDA_PROFILE"
+  echo "conda.sh not found."
   exit 1
 fi
-conda activate IQ
 
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/.mujoco/mujoco210/bin"
+# Activate IQ environment with full path
+IQ_ENV_PATH="/home/ubuntu/shengyifei/conda_cache/envs/IQ"
+if [ -d "$IQ_ENV_PATH" ]; then
+  conda activate "$IQ_ENV_PATH"
+else
+  echo "Error: IQ environment not found at $IQ_ENV_PATH"
+  echo "Available environments:"
+  conda info --envs
+  exit 1
+fi
+
+export MUJOCO_PY_MUJOCO_PATH="/home/ubuntu/shengyifei/lwq/runtime/mujoco210"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/home/ubuntu/shengyifei/lwq/runtime/mujoco210/bin"
+
+# Expert data paths
+export EXPERT_PATH="/home/ubuntu/shengyifei/lwq/experts/walker2d.pkl"
+export SUPPLEMENT_PATH="/home/ubuntu/shengyifei/lwq/supplement/walker2d_medium_expert-v2.pkl"
+export DYNAMICS_CKPT="/home/ubuntu/shengyifei/lwq/Offline-Dual-Q-DM/dynamics"
+
+# OSMesa configuration for mujoco_py compilation
+export CFLAGS="-I/home/ubuntu/shengyifei/lwq/runtime/osmesa_focal_v1/include"
+export LDFLAGS="-L/home/ubuntu/shengyifei/lwq/runtime/osmesa_focal_v1/lib"
+export LD_LIBRARY_PATH="/home/ubuntu/shengyifei/lwq/runtime/osmesa_focal_v1/lib:${LD_LIBRARY_PATH}"
+
+# Set WANDB API key
+export WANDB_API_KEY="${WANDB_API_KEY:-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}"
 
 # Refuse silent CPU fallback when the cloud GPU is not ready.
 # shellcheck source=scripts/gpu_preflight.sh
@@ -47,13 +59,13 @@ source scripts/gpu_preflight.sh
 gpu_preflight "${PYTHON_BIN:-python}"
 
 WANDB_ENTITY="${WANDB_ENTITY:-wenqilaid-nanjing-university}"
-WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM-medium-Expert}"
+WANDB_PROJECT="${WANDB_PROJECT:-Offline-Dual-Q-DM-DJ}"
 NUM_AGENTS="${NUM_AGENTS:-3}"
-SWEEP_CONFIG="${SWEEP_CONFIG:-scripts/wandb_sweep_medium_expert.yaml}"
-SWEEP_LOG="${SWEEP_LOG:-scripts/sweep_ids_medium_expert.log}"
+SWEEP_CONFIG="${SWEEP_CONFIG:-scripts/wandb_sweep_walker_dj.yaml}"
+SWEEP_LOG="${SWEEP_LOG:-scripts/sweep_ids_walker_dj.log}"
 EXISTING_SWEEP_ID="${EXISTING_SWEEP_ID:-}"
 AUTO_REUSE_SWEEP="${AUTO_REUSE_SWEEP:-1}"
-SWEEP_STATE_FILE="${SWEEP_STATE_FILE:-scripts/.sweep_state_medium_expert.env}"
+SWEEP_STATE_FILE="${SWEEP_STATE_FILE:-scripts/.sweep_state_walker_dj.env}"
 AGENT_LAUNCH_STAGGER_SECONDS="${AGENT_LAUNCH_STAGGER_SECONDS:-1}"
 
 if [ ! -f "$SWEEP_CONFIG" ]; then

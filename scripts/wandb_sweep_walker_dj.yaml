@@ -1,0 +1,88 @@
+program: train_iq_mujoco.py
+name: walker_uncertainty
+method: grid
+
+metric:
+  name: eval/episode_reward
+  goal: maximize
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - env=walker2d
+  - agent=sac
+  - offline=True
+  - env.expert_path=/home/ubuntu/shengyifei/lwq/experts/walker2d.pkl
+  - env.supplement_path=/home/ubuntu/shengyifei/lwq/supplement/walker2d_medium_expert-v2.pkl
+  - expert.demos=1
+  - expert.subsample_freq=1
+  - train.batch=256
+  - method.loss=value
+  - method.constrain=True
+  - train.use_target=True
+  - train.soft_update=True
+  - agent.critic_lr=3e-4
+  - agent.critic_tau=0.005
+  - num_actor_updates=1
+  - method.grad_pen=False
+  - cliptarget=False
+  - agent.learn_temp=False
+  - cuda_deterministic=False
+  - method.regularize=False
+  - actor_expert_offline=False
+  - project_name=Offline-Dual-Q-DM-DJ
+  - exp_name=medium_expert_walker
+  - method.uncertainty=True
+  - method.synthetic_constrain=True
+  - method.synthetic_M=1
+  - method.penalty_auto=True
+  - method.penalty_N=5
+  - method.dynamics_ckpt=/home/ubuntu/shengyifei/lwq/Offline-Dual-Q-DM/dynamics/walker2d_medium_expert-v2/ensemble_5.pt
+  - observation_normalization.stats_path=/home/ubuntu/shengyifei/lwq/Offline-Dual-Q-DM/dynamics/walker2d_medium_expert-v2/ensemble_5_obs_normalizer.npz
+  - ${args_no_hyphens}
+  - q_net._target_=agent.sac_models.DoubleQCritic
+  - env.learn_steps=1e6
+
+parameters:
+  agent.actor_lr:
+    values: [1e-4,6e-5]
+
+  agent.actor_update_frequency:
+    values: [1]
+
+  agent.init_temp:
+    values: [0.2,0.15]
+
+  eval.stochastic:
+    values: [false]
+
+  left:
+    values: [-1]
+
+  method.alpha:
+    values: [0.5]
+
+  method.chi:
+    values: [true]
+
+  method.penalty_lr:
+    values: [0.008]
+
+  method.penalty_target:
+    values: [5]
+
+  method.synthetic_coef:
+    values: [0.5,0.3,0.1]
+
+  method.synthetic_warmup_steps:
+    values: [100000,200000]
+
+  right:
+    values: [1]
+
+  seed:
+    values: [0]
+
+  value_ratio:
+    values: [1]

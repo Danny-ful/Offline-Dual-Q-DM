@@ -12,11 +12,11 @@ set -euo pipefail
 
 export USER=ubuntu
 export HOME=/home/ubuntu
-PROJECT_ROOT="/home/ubuntu/laiwenqi/projects/Offline Dual Q-DM"
+PROJECT_ROOT="/home/ubuntu/shengyifei/lwq/Offline-Dual-Q-DM"
 cd "$PROJECT_ROOT"
 
 # Find and source conda
-CONDA_PROFILE="/home/ubuntu/laiwenqi/anaconda3/etc/profile.d/conda.sh"
+CONDA_PROFILE="/home/ubuntu/anaconda3/etc/profile.d/conda.sh"
 ALT_CONDA_PROFILE="/home/ubuntu/anaconda3/etc/profile.d/conda.sh"
 MINI_CONDA_PROFILE="/home/ubuntu/miniconda3/etc/profile.d/conda.sh"
 
